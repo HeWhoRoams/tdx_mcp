@@ -12,7 +12,10 @@
     "start:http": "TRANSPORT=http node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "build": "tsc && shx chmod +x dist/index.js",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "verify": "tsx scripts/verify-connection.ts",
+    "list-apps": "tsx scripts/list-apps.ts",
+    "search-tickets": "tsx scripts/search-tickets.ts"
   },
   "engines": {
     "node": ">=18"
