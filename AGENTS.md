@@ -1,6 +1,8 @@
 # TeamDynamix MCP Server — Agent Instructions
 
-An MCP server exposing the [TeamDynamix Web API](https://solutions.teamdynamix.com/TDWebApi/) as 39 LLM-callable tools across tickets, assets/CIs, projects, issues, people/groups, and reference data.
+An MCP server exposing the [TeamDynamix Web API](https://solutions.teamdynamix.com/TDWebApi/) as 64 LLM-callable tools across nine areas: auth, tickets, assets, CMDB, projects, issues, people/groups, reference data, and reports.
+
+> **Maintenance:** Update tool counts and area lists in the same PR that adds or removes a tool.
 
 ## Build & Run
 
