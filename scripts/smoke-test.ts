@@ -17,36 +17,7 @@
 
 import axios, { type AxiosInstance } from "axios";
 import { getApiBaseUrl } from "../src/constants.js";
-
-// ── Auth helpers (mirror verify-connection.ts) ────────────────────────────────
-
-function getAuthMethod(): "admin" | "user" {
-  const explicit = process.env.TEAMDYNAMIX_AUTH_METHOD?.toLowerCase();
-  if (explicit === "user" || explicit === "admin") return explicit;
-  if (process.env.TEAMDYNAMIX_BEID && process.env.TEAMDYNAMIX_WS_KEY) return "admin";
-  if (process.env.TEAMDYNAMIX_USERNAME && process.env.TEAMDYNAMIX_PASSWORD) return "user";
-  throw new Error(
-    "No credentials found.\n" +
-      "Set TEAMDYNAMIX_BEID + TEAMDYNAMIX_WS_KEY  (admin service account)\n" +
-      "  OR  TEAMDYNAMIX_USERNAME + TEAMDYNAMIX_PASSWORD  (user login)\n" +
-      "in your .env or environment."
-  );
-}
-
-async function authenticate(http: AxiosInstance, method: "admin" | "user"): Promise<string> {
-  if (method === "admin") {
-    const res = await http.post<string>("/auth/loginadmin", {
-      BEID: process.env.TEAMDYNAMIX_BEID,
-      WebServicesKey: process.env.TEAMDYNAMIX_WS_KEY,
-    });
-    return typeof res.data === "string" ? res.data.trim() : String(res.data);
-  }
-  const res = await http.post<string>("/auth/login", {
-    username: process.env.TEAMDYNAMIX_USERNAME,
-    password: process.env.TEAMDYNAMIX_PASSWORD,
-  });
-  return typeof res.data === "string" ? res.data.trim() : String(res.data);
-}
+import { getAuthMethod, authenticate } from "./auth.js";
 
 // ── Check runner ──────────────────────────────────────────────────────────────
 
@@ -72,23 +43,37 @@ async function runCheck(
   if (check.skipReason) {
     return { name: check.name, status: "SKIP", detail: check.skipReason };
   }
-  try {
-    const res =
-      check.method === "POST"
-        ? await http.post(check.path, check.body ?? {}, { headers })
-        : await http.get(check.path, { headers });
-    const code = res.status;
-    return {
-      name: check.name,
-      status: code >= 200 && code < 300 ? "PASS" : "FAIL",
-      detail: `HTTP ${code}`,
-    };
-  } catch (err) {
-    if (axios.isAxiosError(err) && err.response) {
-      return { name: check.name, status: "FAIL", detail: `HTTP ${err.response.status}` };
+
+  const retryDelaysMs = [2000, 4000]; // 2 s then 4 s — matches client.ts backoff for 429/503
+
+  for (let attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
+    try {
+      const res =
+        check.method === "POST"
+          ? await http.post(check.path, check.body ?? {}, { headers })
+          : await http.get(check.path, { headers });
+      const code = res.status;
+      return {
+        name: check.name,
+        status: code >= 200 && code < 300 ? "PASS" : "FAIL",
+        detail: `HTTP ${code}`,
+      };
+    } catch (err) {
+      const httpStatus = axios.isAxiosError(err) && err.response ? err.response.status : 0;
+      if ((httpStatus === 429 || httpStatus === 503) && attempt < retryDelaysMs.length) {
+        await new Promise<void>((resolve) => setTimeout(resolve, retryDelaysMs[attempt]));
+        continue;
+      }
+      if (axios.isAxiosError(err) && err.response) {
+        const retried = attempt > 0 ? " (after retries)" : "";
+        return { name: check.name, status: "FAIL", detail: `HTTP ${httpStatus}${retried}` };
+      }
+      return { name: check.name, status: "FAIL", detail: (err as Error).message };
     }
-    return { name: check.name, status: "FAIL", detail: (err as Error).message };
   }
+
+  // Required for TypeScript control-flow analysis; loop above always returns or continues.
+  return { name: check.name, status: "FAIL", detail: "exhausted retries" };
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -175,7 +160,7 @@ async function run(): Promise<void> {
     // Reference — global
     { name: "list_accounts               GET  /accounts",                           method: "GET",  path: "/accounts" },
     { name: "list_locations              GET  /locations",                          method: "GET",  path: "/locations" },
-    { name: "list_custom_attributes      GET  /attributes/custom?componentId=9",    method: "GET",  path: "/attributes/custom?componentId=9" },
+    { name: "list_custom_attributes      GET  /attributes/custom?componentId=9",    method: "GET",  path: "/attributes/custom?componentId=9" }, // componentId=9 → Ticket
 
     // Reference — ticketing app
     { name: `list_ticket_types           GET  /${t}/tickets/types`,                 method: "GET",  path: `/${t}/tickets/types`,          skipReason: noTicketing },

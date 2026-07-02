@@ -12,19 +12,7 @@
 
 import axios from "axios";
 import { getApiBaseUrl } from "../src/constants.js";
-
-function getAuthMethod(): "admin" | "user" {
-  const explicit = process.env.TEAMDYNAMIX_AUTH_METHOD?.toLowerCase();
-  if (explicit === "user" || explicit === "admin") return explicit;
-  if (process.env.TEAMDYNAMIX_BEID && process.env.TEAMDYNAMIX_WS_KEY) return "admin";
-  if (process.env.TEAMDYNAMIX_USERNAME && process.env.TEAMDYNAMIX_PASSWORD) return "user";
-  throw new Error(
-    "No credentials found.\n" +
-    "Set TEAMDYNAMIX_BEID + TEAMDYNAMIX_WS_KEY  (admin service account)\n" +
-    "  OR  TEAMDYNAMIX_USERNAME + TEAMDYNAMIX_PASSWORD  (user login)\n" +
-    "in your .env or environment."
-  );
-}
+import { getAuthMethod, authenticate } from "./auth.js";
 
 async function run() {
   let baseUrl: string;
@@ -44,19 +32,7 @@ async function run() {
   // ── 1. Authenticate ─────────────────────────────────────────────────────────
   let token: string;
   try {
-    if (method === "admin") {
-      const res = await http.post<string>("/auth/loginadmin", {
-        BEID: process.env.TEAMDYNAMIX_BEID,
-        WebServicesKey: process.env.TEAMDYNAMIX_WS_KEY,
-      });
-      token = typeof res.data === "string" ? res.data.trim() : String(res.data);
-    } else {
-      const res = await http.post<string>("/auth/login", {
-        username: process.env.TEAMDYNAMIX_USERNAME,
-        password: process.env.TEAMDYNAMIX_PASSWORD,
-      });
-      token = typeof res.data === "string" ? res.data.trim() : String(res.data);
-    }
+    token = await authenticate(http, method);
     console.log("✅ Authentication succeeded");
   } catch (err) {
     if (axios.isAxiosError(err)) {

@@ -26,6 +26,7 @@
 
 import axios from "axios";
 import { getApiBaseUrl } from "../src/constants.js";
+import { getAuthMethod, authenticate } from "./auth.js";
 
 function arg(flag: string): string | undefined {
   const idx = process.argv.indexOf(flag);
@@ -78,25 +79,13 @@ async function run() {
   const typeIds = csvInts(arg("--type-ids"));
   const asJson = flag("--json");
 
-  const method = process.env.TEAMDYNAMIX_BEID ? "admin" : "user";
+  const method = getAuthMethod();
   const http = axios.create({ baseURL: baseUrl, timeout: 30000 });
 
   // Authenticate
   let token: string;
   try {
-    if (method === "admin") {
-      const res = await http.post<string>("/auth/loginadmin", {
-        BEID: process.env.TEAMDYNAMIX_BEID,
-        WebServicesKey: process.env.TEAMDYNAMIX_WS_KEY,
-      });
-      token = typeof res.data === "string" ? res.data.trim() : String(res.data);
-    } else {
-      const res = await http.post<string>("/auth/login", {
-        username: process.env.TEAMDYNAMIX_USERNAME,
-        password: process.env.TEAMDYNAMIX_PASSWORD,
-      });
-      token = typeof res.data === "string" ? res.data.trim() : String(res.data);
-    }
+    token = await authenticate(http, method);
   } catch (err) {
     if (axios.isAxiosError(err)) {
       console.error(`❌ Authentication failed: HTTP ${err.response?.status}`, err.response?.data ?? err.message);
