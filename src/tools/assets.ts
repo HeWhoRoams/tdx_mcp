@@ -40,6 +40,10 @@ const CreateAssetInputSchema = z
     location_id: z.number().int().positive().optional(),
     owning_customer_uid: z.string().optional().describe("Person UID of the owning customer."),
     owning_department_id: z.number().int().positive().optional().describe("Owning department/account ID."),
+    custom_attributes: z
+      .array(z.object({ ID: z.number().int(), Value: z.string() }))
+      .optional()
+      .describe("Custom attribute values to set. Use teamdynamix_list_custom_attributes (component_id=63) to discover IDs."),
     response_format: ResponseFormatSchema,
   })
   .strict();
@@ -55,6 +59,10 @@ const UpdateAssetInputSchema = z
     location_id: z.number().int().positive().optional(),
     owning_customer_uid: z.string().optional(),
     owning_department_id: z.number().int().positive().optional(),
+    custom_attributes: z
+      .array(z.object({ ID: z.number().int(), Value: z.string() }))
+      .optional()
+      .describe("Custom attribute values to update. Use teamdynamix_list_custom_attributes (component_id=63) to discover IDs."),
     response_format: ResponseFormatSchema,
   })
   .strict();
@@ -211,6 +219,7 @@ Error Handling:
         if (params.location_id) body.LocationID = params.location_id;
         if (params.owning_customer_uid) body.OwningCustomerID = params.owning_customer_uid;
         if (params.owning_department_id) body.OwningDepartmentID = params.owning_department_id;
+        if (params.custom_attributes) body.Attributes = params.custom_attributes;
 
         const asset = await tdRequest<TdAsset>(`/${params.app_id}/assets`, "POST", body);
         const text =
@@ -253,11 +262,12 @@ Error Handling:
           params.tag === undefined &&
           params.location_id === undefined &&
           params.owning_customer_uid === undefined &&
-          params.owning_department_id === undefined
+          params.owning_department_id === undefined &&
+          params.custom_attributes === undefined
         ) {
           return {
             isError: true,
-            content: [{ type: "text" as const, text: "Error: At least one field to update must be provided (name, status_id, serial_number, tag, location_id, owning_customer_uid, or owning_department_id)." }],
+            content: [{ type: "text" as const, text: "Error: At least one field to update must be provided (name, status_id, serial_number, tag, location_id, owning_customer_uid, owning_department_id, or custom_attributes)." }],
           };
         }
         if (params.name !== undefined) ops.push({ op: "replace", path: "/Name", value: params.name });
@@ -269,6 +279,8 @@ Error Handling:
           ops.push({ op: "replace", path: "/OwningCustomerID", value: params.owning_customer_uid });
         if (params.owning_department_id !== undefined)
           ops.push({ op: "replace", path: "/OwningDepartmentID", value: params.owning_department_id });
+        if (params.custom_attributes !== undefined)
+          ops.push({ op: "replace", path: "/Attributes", value: params.custom_attributes });
 
         const asset = await tdRequest<TdAsset>(`/${params.app_id}/assets/${params.asset_id}`, "PATCH", ops);
         const text =

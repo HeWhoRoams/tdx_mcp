@@ -109,6 +109,8 @@ class TeamDynamixClient {
   /**
    * Make an authenticated request against the TeamDynamix Web API.
    * `endpoint` is relative to /TDWebApi/api, e.g. "tickets/search" or "/49/tickets/12345".
+   * Automatically retries on 429 (rate limit) and 503 (service unavailable) with
+   * exponential backoff (2 s, then 4 s), and retries once on 401 to refresh the token.
    */
   async request<T>(
     endpoint: string,
@@ -118,31 +120,37 @@ class TeamDynamixClient {
   ): Promise<T> {
     const token = await this.getToken();
     const path = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
-    try {
-      const response = await this.http.request<T>({
-        url: path,
-        method,
-        data,
-        params,
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      return response.data;
-    } catch (error) {
-      if (error instanceof AxiosError && error.response?.status === 401) {
-        // Token may have been invalidated server-side; force one refresh and retry once.
-        this.cachedToken = undefined;
-        const freshToken = await this.getToken();
-        const retryResponse = await this.http.request<T>({
+    const retryDelaysMs = [2000, 4000];
+
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
+      try {
+        const response = await this.http.request<T>({
           url: path,
           method,
           data,
           params,
-          headers: { Authorization: `Bearer ${freshToken}` },
+          headers: { Authorization: `Bearer ${attempt === 0 ? token : await this.getToken()}` },
         });
-        return retryResponse.data;
+        return response.data;
+      } catch (error) {
+        lastError = error;
+        if (error instanceof AxiosError) {
+          const status = error.response?.status;
+          if (status === 401 && attempt === 0) {
+            // Token invalidated server-side: force a refresh and retry once immediately.
+            this.cachedToken = undefined;
+            continue;
+          }
+          if ((status === 429 || status === 503) && attempt < retryDelaysMs.length) {
+            await new Promise((resolve) => setTimeout(resolve, retryDelaysMs[attempt]));
+            continue;
+          }
+        }
+        throw error;
       }
-      throw error;
     }
+    throw lastError;
   }
 }
 

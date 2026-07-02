@@ -53,6 +53,10 @@ const CreateTicketInputSchema = z
     responsible_group_id: z.number().int().positive().optional().describe("Group ID to assign as responsible for the ticket."),
     notify_requestor: z.boolean().default(false).describe("Whether to email the requestor about ticket creation."),
     notify_responsible: z.boolean().default(false).describe("Whether to email the newly-responsible resource(s)."),
+    custom_attributes: z
+      .array(z.object({ ID: z.number().int(), Value: z.string() }))
+      .optional()
+      .describe("Custom attribute values to set. Each entry needs the attribute ID and the value (or choice ID as string). Use teamdynamix_list_custom_attributes (component_id=9) to discover IDs."),
     response_format: ResponseFormatSchema,
   })
   .strict();
@@ -68,6 +72,10 @@ const UpdateTicketInputSchema = z
     responsible_uid: z.string().optional().describe("New responsible person UID."),
     responsible_group_id: z.number().int().positive().optional().describe("New responsible group ID."),
     notify_responsible: z.boolean().default(false).describe("Whether to notify the newly-responsible resource(s) if responsibility changes."),
+    custom_attributes: z
+      .array(z.object({ ID: z.number().int(), Value: z.string() }))
+      .optional()
+      .describe("Custom attribute values to update. Use teamdynamix_list_custom_attributes (component_id=9) to discover IDs."),
     response_format: ResponseFormatSchema,
   })
   .strict();
@@ -107,6 +115,21 @@ const CreateTicketTaskInputSchema = z
     description: z.string().max(50000).optional().describe("The task description."),
     start_date: z.string().optional().describe("ISO 8601 planned start date/time."),
     end_date: z.string().optional().describe("ISO 8601 planned end date/time."),
+    responsible_uid: z.string().optional().describe("Person UID responsible for the task."),
+    response_format: ResponseFormatSchema,
+  })
+  .strict();
+
+const UpdateTicketTaskInputSchema = z
+  .object({
+    app_id: AppIdSchema,
+    ticket_id: z.number().int().positive().describe("The ID of the ticket the task belongs to."),
+    task_id: z.number().int().positive().describe("The ID of the ticket task to update."),
+    title: z.string().min(1).max(500).optional().describe("New task title."),
+    description: z.string().max(50000).optional().describe("New task description."),
+    start_date: z.string().optional().describe("ISO 8601 planned start date/time."),
+    end_date: z.string().optional().describe("ISO 8601 planned end date/time."),
+    percent_complete: z.number().int().min(0).max(100).optional().describe("Task completion percentage (0-100)."),
     responsible_uid: z.string().optional().describe("Person UID responsible for the task."),
     response_format: ResponseFormatSchema,
   })
@@ -277,6 +300,7 @@ Error Handling:
         if (params.requestor_uid) body.RequestorUid = params.requestor_uid;
         if (params.responsible_uid) body.ResponsibleUid = params.responsible_uid;
         if (params.responsible_group_id) body.ResponsibleGroupID = params.responsible_group_id;
+        if (params.custom_attributes) body.Attributes = params.custom_attributes;
 
         const created = await tdRequest<TdTicket>(`/${params.app_id}/tickets`, "POST", body, {
           NotifyRequestor: params.notify_requestor,
@@ -323,11 +347,12 @@ Error Handling:
           params.status_id === undefined &&
           params.priority_id === undefined &&
           params.responsible_uid === undefined &&
-          params.responsible_group_id === undefined
+          params.responsible_group_id === undefined &&
+          params.custom_attributes === undefined
         ) {
           return {
             isError: true,
-            content: [{ type: "text" as const, text: "Error: At least one field to update must be provided (title, description, status_id, priority_id, responsible_uid, or responsible_group_id)." }],
+            content: [{ type: "text" as const, text: "Error: At least one field to update must be provided (title, description, status_id, priority_id, responsible_uid, responsible_group_id, or custom_attributes)." }],
           };
         }
         if (params.title !== undefined) ops.push({ op: "replace", path: "/Title", value: params.title });
@@ -337,6 +362,8 @@ Error Handling:
         if (params.responsible_uid !== undefined) ops.push({ op: "replace", path: "/ResponsibleUid", value: params.responsible_uid });
         if (params.responsible_group_id !== undefined)
           ops.push({ op: "replace", path: "/ResponsibleGroupID", value: params.responsible_group_id });
+        if (params.custom_attributes !== undefined)
+          ops.push({ op: "replace", path: "/Attributes", value: params.custom_attributes });
 
         const updated = await tdRequest<TdTicket>(`/${params.app_id}/tickets/${params.ticket_id}`, "PATCH", ops, {
           notifyNewResponsible: params.notify_responsible,
@@ -508,6 +535,71 @@ Error Handling:
         const text =
           params.response_format === ResponseFormat.MARKDOWN
             ? `Task "${params.title}" created on ticket #${params.ticket_id} (task #${task.ID}).`
+            : toJsonText(task);
+        return { content: [{ type: "text" as const, text }] };
+      } catch (error) {
+        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
+      }
+    }
+  );
+
+  server.registerTool(
+    "teamdynamix_update_ticket_task",
+    {
+      title: "Update TeamDynamix Ticket Task",
+      description: `Updates an existing ticket task — change its title, dates, completion percentage, or responsible person.
+
+Args:
+  - app_id (number): The ticketing application ID
+  - ticket_id (number): The ticket ID
+  - task_id (number): The task ID to update
+  - title, description, start_date, end_date, responsible_uid (optional)
+  - percent_complete (number 0-100, optional): Set to 100 to mark the task complete
+  - response_format ('markdown' | 'json', default 'markdown')
+
+Returns: The updated ticket task.
+
+Error Handling:
+  - Returns "Error: Resource not found" if task_id or ticket_id is invalid`,
+      inputSchema: UpdateTicketTaskInputSchema.shape,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    async (params) => {
+      try {
+        if (
+          params.title === undefined &&
+          params.description === undefined &&
+          params.start_date === undefined &&
+          params.end_date === undefined &&
+          params.percent_complete === undefined &&
+          params.responsible_uid === undefined
+        ) {
+          return {
+            isError: true,
+            content: [{ type: "text" as const, text: "Error: At least one field to update must be provided." }],
+          };
+        }
+        // GET existing task first so we can merge (PUT requires a full object)
+        const existing = await tdRequest<Record<string, unknown>>(
+          `/${params.app_id}/tickets/${params.ticket_id}/tasks/${params.task_id}`
+        );
+        const merged: Record<string, unknown> = {
+          ...existing,
+          ...(params.title !== undefined ? { Title: params.title } : {}),
+          ...(params.description !== undefined ? { Description: params.description } : {}),
+          ...(params.start_date !== undefined ? { StartDate: params.start_date } : {}),
+          ...(params.end_date !== undefined ? { EndDate: params.end_date } : {}),
+          ...(params.percent_complete !== undefined ? { PercentComplete: params.percent_complete } : {}),
+          ...(params.responsible_uid !== undefined ? { ResponsibleUid: params.responsible_uid } : {}),
+        };
+        const task = await tdRequest<Record<string, unknown>>(
+          `/${params.app_id}/tickets/${params.ticket_id}/tasks/${params.task_id}`,
+          "PUT",
+          merged
+        );
+        const text =
+          params.response_format === ResponseFormat.MARKDOWN
+            ? `Task #${params.task_id} updated on ticket #${params.ticket_id}.${params.percent_complete !== undefined ? ` (${params.percent_complete}% complete)` : ""}`
             : toJsonText(task);
         return { content: [{ type: "text" as const, text }] };
       } catch (error) {

@@ -21,10 +21,12 @@ import express from "express";
 import { registerAuthTools } from "./tools/auth.js";
 import { registerTicketTools } from "./tools/tickets.js";
 import { registerAssetTools } from "./tools/assets.js";
+import { registerCmdbTools } from "./tools/cmdb.js";
 import { registerProjectTools } from "./tools/projects.js";
 import { registerIssueTools } from "./tools/issues.js";
 import { registerPeopleTools } from "./tools/people.js";
 import { registerReferenceTools } from "./tools/reference.js";
+import { registerReportTools } from "./tools/reports.js";
 
 function createServer(): McpServer {
   const server = new McpServer({
@@ -35,10 +37,12 @@ function createServer(): McpServer {
   registerAuthTools(server);
   registerTicketTools(server);
   registerAssetTools(server);
+  registerCmdbTools(server);
   registerProjectTools(server);
   registerIssueTools(server);
   registerPeopleTools(server);
   registerReferenceTools(server);
+  registerReportTools(server);
 
   return server;
 }

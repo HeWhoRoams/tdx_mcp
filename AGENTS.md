@@ -19,21 +19,25 @@ npx @modelcontextprotocol/inspector node dist/index.js  # interactive testing
 ```
 src/
 ├── index.ts          # Entry point: transport selection + tool registration
-├── types.ts          # Shared TS types (TdTicket, TdAsset, etc.) + paginate()
+├── types.ts          # Shared TS types (TdTicket, TdAsset, TdCi, etc.) + paginate()
 ├── constants.ts      # CHARACTER_LIMIT, pagination defaults, getApiBaseUrl()
 ├── schemas/
 │   └── common.ts     # Reusable Zod schemas: AppIdSchema, LimitSchema, OffsetSchema, ResponseFormatSchema
 ├── services/
-│   ├── client.ts     # TeamDynamixClient: JWT auth/refresh, tdRequest(), handleApiError()
+│   ├── client.ts     # TeamDynamixClient: JWT auth/refresh, tdRequest(), handleApiError(), 429/503 retry
 │   └── format.ts     # toJsonText(), truncateMarkdown(), formatDate(), nameWithId()
 └── tools/            # One file per domain — each exports a register*Tools(server) function
     ├── auth.ts
-    ├── tickets.ts
-    ├── assets.ts
+    ├── tickets.ts    # search, get, create, update, feed, tasks (get/create/update)
+    ├── assets.ts     # search, get, create, update, feed
+    ├── cmdb.ts       # search, get, create, update, feed, relationships (get/add/remove), link to ticket
     ├── projects.ts
     ├── issues.ts
-    ├── people.ts
-    └── reference.ts
+    ├── people.ts     # lookup, search, get, get UID by username, groups (search/get/members/add/remove)
+    ├── reference.ts  # applications, ticket types/statuses/priorities/sources/forms/impacts/urgencies,
+    │                 # asset statuses, product models, vendors, locations, accounts,
+    │                 # CI types, CI relationship types, custom attributes
+    └── reports.ts    # list reports, get report data, list/run saved searches
 ```
 
 ## Adding a New Tool
@@ -48,12 +52,15 @@ src/
 ## Key Conventions
 
 - **`app_id` is required on most tools.** It scopes the request to a specific TDX application (e.g., a particular ticketing or assets app). Always call `teamdynamix_list_applications` first to discover valid IDs.
+- **Assets vs CIs**: Assets live at `/{appId}/assets/...`; Configuration Items live at `/{appId}/cmdb/...`. These are separate TDX namespaces with separate type/relationship systems. Use `teamdynamix_search_assets` for the Assets namespace and `teamdynamix_search_cis` for CMDB.
 - **Reference data before create/update.** Valid `type_id`, `status_id`, `priority_id` values vary per org and per application. Use `teamdynamix_list_ticket_types`, `teamdynamix_list_ticket_statuses`, etc. before creating records.
 - **`*_search` returns partial records; `*_get_*` returns full records.** TD's own API omits descriptions and custom attributes from search results. Use the get tool for full details.
+- **Custom attributes**: Pass `custom_attributes: [{ ID: number, Value: string }]` to create/update tools for tickets, assets, and CIs. Call `teamdynamix_list_custom_attributes` (component_id=9 for tickets, 63 for assets/CIs) to discover attribute IDs and valid choice values.
 - **`response_format`**: `markdown` (default, human-readable) or `json` (full raw API payload). Agents requesting structured data should pass `response_format: "json"`.
 - **Pagination**: all list/search tools accept `limit` (max 100, default 25) and `offset`. Responses include `has_more` and `next_offset`.
 - **Responses are capped at 25,000 characters** and truncated with a message instructing the agent to narrow the query or paginate.
-- **Rate limits**: TD commonly enforces 30–60 calls/60 s per IP. The server surfaces `429` errors — do not retry silently.
+- **Rate limits**: TD commonly enforces 30–60 calls/60 s per IP. The client auto-retries 429 and 503 responses with 2 s / 4 s backoff before surfacing the error.
+- **Reports**: `teamdynamix_get_report` (with `with_data=true`) and `teamdynamix_run_saved_search` are the most powerful read operations for complex queries — prefer these over chaining many search calls.
 
 ## Authentication
 

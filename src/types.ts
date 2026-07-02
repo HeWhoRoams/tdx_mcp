@@ -114,3 +114,19 @@ export interface TdFeedEntry {
   CreatedByName?: string;
   [key: string]: unknown;
 }
+
+export interface TdCi {
+  ID: number;
+  Name: string;
+  TypeID?: number;
+  TypeName?: string;
+  Tag?: string;
+  SerialNumber?: string;
+  StatusID?: number;
+  StatusName?: string;
+  ProductModelName?: string;
+  LocationName?: string;
+  OwningCustomerName?: string;
+  OwningDepartmentName?: string;
+  [key: string]: unknown;
+}

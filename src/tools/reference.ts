@@ -179,4 +179,151 @@ Args:
 Returns: List of accounts/departments with ID and Name.`,
     false
   );
+
+  registerSimpleListTool(
+    server,
+    "teamdynamix_list_locations",
+    "List TeamDynamix Locations",
+    () => `/locations`,
+    `Lists all active locations in the TeamDynamix organization. Location IDs are used when creating or filtering assets.
+
+Args:
+  - response_format ('markdown' | 'json', default 'markdown')
+
+Returns: List of locations with ID and Name.`,
+    false
+  );
+
+  registerSimpleListTool(
+    server,
+    "teamdynamix_list_ticket_impacts",
+    "List TeamDynamix Ticket Impacts",
+    (appId) => `/${appId}/tickets/impacts`,
+    `Lists the ticket impact values configured for a ticketing application.
+
+Args:
+  - app_id (number): The ticketing application ID
+  - response_format ('markdown' | 'json', default 'markdown')
+
+Returns: List of ticket impacts with ID and Name.`,
+    true
+  );
+
+  registerSimpleListTool(
+    server,
+    "teamdynamix_list_ticket_urgencies",
+    "List TeamDynamix Ticket Urgencies",
+    (appId) => `/${appId}/tickets/urgencies`,
+    `Lists the ticket urgency values configured for a ticketing application.
+
+Args:
+  - app_id (number): The ticketing application ID
+  - response_format ('markdown' | 'json', default 'markdown')
+
+Returns: List of ticket urgencies with ID and Name.`,
+    true
+  );
+
+  registerSimpleListTool(
+    server,
+    "teamdynamix_list_product_models",
+    "List TeamDynamix Product Models",
+    (appId) => `/${appId}/assets/models`,
+    `Lists all active product models for an Assets application. Product model IDs are used when creating or filtering assets.
+
+Args:
+  - app_id (number): The Assets application ID
+  - response_format ('markdown' | 'json', default 'markdown')
+
+Returns: List of product models with ID and Name.`,
+    true
+  );
+
+  registerSimpleListTool(
+    server,
+    "teamdynamix_list_ci_types",
+    "List TeamDynamix CI Types",
+    (appId) => `/${appId}/cmdb/types`,
+    `Lists the configuration item types configured for an Assets/CMDB application. CI type IDs are required when creating CIs.
+
+Args:
+  - app_id (number): The Assets/CMDB application ID
+  - response_format ('markdown' | 'json', default 'markdown')
+
+Returns: List of CI types with ID and Name.`,
+    true
+  );
+
+  registerSimpleListTool(
+    server,
+    "teamdynamix_list_ci_relationship_types",
+    "List TeamDynamix CI Relationship Types",
+    (appId) => `/${appId}/cmdb/relationshiptypes`,
+    `Lists the CI relationship types configured for an Assets/CMDB application. Required when adding relationships between CIs with teamdynamix_add_ci_relationship.
+
+Args:
+  - app_id (number): The Assets/CMDB application ID
+  - response_format ('markdown' | 'json', default 'markdown')
+
+Returns: List of relationship types with ID and Name.`,
+    true
+  );
+
+  // Custom attributes tool — uses a different pattern (query param, not path param)
+  server.registerTool(
+    "teamdynamix_list_custom_attributes",
+    {
+      title: "List TeamDynamix Custom Attributes",
+      description: `Lists the custom attribute definitions for a given component type. Use this to discover the attribute IDs and valid choice values needed to read or set custom attributes on tickets, assets, or CIs.
+
+Common component_id values:
+  - 9  = Ticket
+  - 63 = Asset / CI
+
+Args:
+  - component_id (number): The component type ID (9 for Ticket, 63 for Asset/CI)
+  - app_id (number, optional): Scope to a specific application (recommended)
+  - response_format ('markdown' | 'json', default 'markdown')
+
+Returns: List of custom attribute definitions including ID, Name, field type, and choice options.
+
+Error Handling:
+  - Returns empty list if no custom attributes are configured for the component`,
+      inputSchema: z
+        .object({
+          component_id: z.number().int().positive().describe("The component type ID (9 = Ticket, 63 = Asset/CI)."),
+          app_id: z.number().int().positive().optional().describe("Optional: scope to a specific application."),
+          response_format: ResponseFormatSchema,
+        })
+        .strict().shape,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ component_id, app_id, response_format }) => {
+      try {
+        const queryParams: Record<string, unknown> = { componentId: component_id };
+        if (app_id !== undefined) queryParams.appId = app_id;
+        const attrs = await tdRequest<Array<Record<string, unknown>>>(`/attributes/custom`, "GET", undefined, queryParams);
+        if (!attrs || attrs.length === 0) {
+          return { content: [{ type: "text" as const, text: `No custom attributes found for component ID ${component_id}.` }] };
+        }
+        let text: string;
+        if (response_format === ResponseFormat.MARKDOWN) {
+          const lines = [`# Custom Attributes for Component ${component_id} (${attrs.length})`, ""];
+          for (const attr of attrs) {
+            lines.push(`- **${attr.Name}** (ID: ${attr.ID}, type: ${attr.FieldType ?? attr.DataType ?? "unknown"})`);
+            const choices = attr.Choices as Array<Record<string, unknown>> | undefined;
+            if (choices && choices.length > 0) {
+              for (const c of choices) lines.push(`  - Choice: ${c.Name} (ID: ${c.ID})`);
+            }
+          }
+          text = truncateMarkdown(lines.join("\n"));
+        } else {
+          text = toJsonText(attrs);
+        }
+        return { content: [{ type: "text" as const, text }] };
+      } catch (error) {
+        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
+      }
+    }
+  );
 }

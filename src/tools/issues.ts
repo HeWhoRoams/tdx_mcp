@@ -2,11 +2,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { tdRequest, handleApiError } from "../services/client.js";
 import { toJsonText, truncateMarkdown, nameWithId } from "../services/format.js";
-import { LimitSchema, OffsetSchema, ResponseFormatSchema } from "../schemas/common.js";
+import { AppIdSchema, LimitSchema, OffsetSchema, ResponseFormatSchema } from "../schemas/common.js";
 import { ResponseFormat, TdIssue, paginate } from "../types.js";
 
 const SearchIssuesInputSchema = z
   .object({
+    app_id: AppIdSchema,
     project_ids: z.array(z.number().int()).optional().describe("Restrict to these project IDs."),
     search_text: z.string().max(200).optional().describe("Free-text search against issue title."),
     status_ids: z.array(z.number().int()).optional().describe("Filter by IssueStatus IDs."),
@@ -18,6 +19,7 @@ const SearchIssuesInputSchema = z
 
 const GetIssueInputSchema = z
   .object({
+    app_id: AppIdSchema,
     project_id: z.number().int().positive().describe("The project ID the issue belongs to."),
     issue_id: z.number().int().positive().describe("The issue ID."),
     response_format: ResponseFormatSchema,
@@ -26,6 +28,7 @@ const GetIssueInputSchema = z
 
 const CreateIssueInputSchema = z
   .object({
+    app_id: AppIdSchema,
     project_id: z.number().int().positive().describe("The project ID to create the issue under."),
     title: z.string().min(1).max(500).describe("The issue title."),
     description: z.string().max(50000).optional(),
@@ -38,6 +41,7 @@ const CreateIssueInputSchema = z
 
 const UpdateIssueInputSchema = z
   .object({
+    app_id: AppIdSchema,
     project_id: z.number().int().positive().describe("The project ID the issue belongs to."),
     issue_id: z.number().int().positive().describe("The issue ID to update."),
     title: z.string().min(1).max(500).optional(),
@@ -86,7 +90,7 @@ Error Handling:
         if (params.search_text) body.SearchText = params.search_text;
         if (params.status_ids) body.StatusIDs = params.status_ids;
 
-        const results = await tdRequest<TdIssue[]>(`/projects/issues/search`, "POST", body);
+        const results = await tdRequest<TdIssue[]>(`/${params.app_id}/projects/issues/search`, "POST", body);
         const page = paginate(results ?? [], params.limit, params.offset);
         if (page.items.length === 0) {
           return { content: [{ type: "text" as const, text: "No issues found matching the given criteria." }] };
@@ -125,9 +129,9 @@ Error Handling:
       inputSchema: GetIssueInputSchema.shape,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
-    async ({ project_id, issue_id, response_format }) => {
+    async ({ app_id, project_id, issue_id, response_format }) => {
       try {
-        const issue = await tdRequest<TdIssue>(`/projects/${project_id}/issues/${issue_id}`);
+        const issue = await tdRequest<TdIssue>(`/${app_id}/projects/${project_id}/issues/${issue_id}`);
         const text =
           response_format === ResponseFormat.MARKDOWN ? truncateMarkdown(formatIssueMarkdown(issue)) : toJsonText(issue);
         return { content: [{ type: "text" as const, text }], structuredContent: issue as unknown as Record<string, unknown> };
@@ -165,7 +169,7 @@ Error Handling:
         if (params.priority_name) body.PriorityName = params.priority_name;
         if (params.responsible_uid) body.ResponsibleUid = params.responsible_uid;
 
-        const issue = await tdRequest<TdIssue>(`/projects/issues`, "POST", body);
+        const issue = await tdRequest<TdIssue>(`/${params.app_id}/projects/issues`, "POST", body);
         const text =
           params.response_format === ResponseFormat.MARKDOWN
             ? truncateMarkdown(`# Issue Created\n\n${formatIssueMarkdown(issue)}`)
@@ -209,7 +213,7 @@ Error Handling:
             content: [{ type: "text" as const, text: "Error: At least one field to update must be provided (title, description, status_id, or responsible_uid)." }],
           };
         }
-        const existing = await tdRequest<TdIssue>(`/projects/${params.project_id}/issues/${params.issue_id}`);
+        const existing = await tdRequest<TdIssue>(`/${params.app_id}/projects/${params.project_id}/issues/${params.issue_id}`);
         const merged = {
           ...existing,
           ...(params.title !== undefined ? { Title: params.title } : {}),
@@ -217,7 +221,7 @@ Error Handling:
           ...(params.status_id !== undefined ? { StatusID: params.status_id } : {}),
           ...(params.responsible_uid !== undefined ? { ResponsibleUid: params.responsible_uid } : {}),
         };
-        const issue = await tdRequest<TdIssue>(`/projects/${params.project_id}/issues/${params.issue_id}`, "POST", merged);
+        const issue = await tdRequest<TdIssue>(`/${params.app_id}/projects/${params.project_id}/issues/${params.issue_id}`, "POST", merged);
         const text =
           params.response_format === ResponseFormat.MARKDOWN
             ? truncateMarkdown(`# Issue Updated\n\n${formatIssueMarkdown(issue)}`)
