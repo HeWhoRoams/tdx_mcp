@@ -139,6 +139,24 @@ async function testHttp(): Promise<void> {
       throw new Error(`http: expected an untrusted Origin to return 403, received ${forbiddenOrigin.status}.`);
     }
 
+    for (const method of ["GET", "DELETE"]) {
+      const unsupportedMethod = await fetch(serverUrl, {
+        method,
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (unsupportedMethod.status !== 405 || unsupportedMethod.headers.get("allow") !== "POST") {
+        throw new Error(`http: expected ${method} /mcp to return 405 with Allow: POST.`);
+      }
+      const errorBody = (await unsupportedMethod.json()) as {
+        jsonrpc?: string;
+        error?: { code?: number };
+        id?: unknown;
+      };
+      if (errorBody.jsonrpc !== "2.0" || typeof errorBody.error?.code !== "number" || errorBody.id !== null) {
+        throw new Error(`http: ${method} /mcp response did not preserve the JSON-RPC error envelope.`);
+      }
+    }
+
     const client = new Client({ name: "teamdynamix-mcp-protocol-test", version: "1.0.0" });
     const transport = new StreamableHTTPClientTransport(serverUrl, {
       requestInit: { headers: { Authorization: `Bearer ${authToken}` } },

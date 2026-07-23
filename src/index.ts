@@ -164,7 +164,7 @@ async function runHTTP(): Promise<void> {
   // This server uses stateless JSON responses (no persistent sessions), so SSE
   // is not supported — return 405 with a clear explanation so clients fail fast.
   app.get("/mcp", (_req, res) => {
-    res.status(405).set("Allow", "POST, DELETE").json({
+    res.status(405).set("Allow", "POST").json({
       jsonrpc: "2.0",
       error: {
         code: -32000,
@@ -202,7 +202,7 @@ async function runHTTP(): Promise<void> {
     }
   });
 
-  // Session teardown — some clients send DELETE /mcp to close sessions; acknowledge gracefully.
+  // Stateless transport has no session to tear down, so DELETE is not supported.
   app.delete("/mcp", (_req, res) => {
     res.status(405).set("Allow", "POST").json({
       jsonrpc: "2.0",

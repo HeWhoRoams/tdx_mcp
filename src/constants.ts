@@ -6,7 +6,7 @@ export const DEFAULT_LIMIT = 25;
 export const MAX_LIMIT = 100;
 
 // TeamDynamix Web API base path is always "<org base url>/TDWebApi/api".
-// TEAMDYNAMIX_BASE_URL should be the org's root, e.g. https://demotemplate.teamdynamix.com
+// TEAMDYNAMIX_BASE_URL should be the org's root, e.g. https://yourorg.teamdynamix.com
 export function getApiBaseUrl(): string {
   const raw = process.env.TEAMDYNAMIX_BASE_URL;
   if (!raw) {
