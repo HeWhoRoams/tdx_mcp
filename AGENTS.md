@@ -8,13 +8,14 @@ An MCP server exposing the [TeamDynamix Web API](https://solutions.teamdynamix.c
 
 ```bash
 npm run build        # tsc → dist/
+npm run test:mcp     # protocol handshakes over stdio + authenticated HTTP
 npm run dev          # tsx watch (no build needed)
 npm start            # stdio transport (default)
-TRANSPORT=http npm start   # Streamable HTTP on PORT (default 3000)
+npm run start:http   # Streamable HTTP on 127.0.0.1:3000
 npx @modelcontextprotocol/inspector node dist/index.js  # interactive testing
 ```
 
-`npm run build` must pass before testing with a real MCP client. There are no automated tests — validate interactively via the inspector or a connected LLM client.
+`npm run build` and `npm run test:mcp` must pass before testing with a real MCP client. The protocol test validates discovery and read/write annotations without calling TeamDynamix; validate live API behavior with `npm run smoke-test` or the inspector.
 
 ## Project Structure
 

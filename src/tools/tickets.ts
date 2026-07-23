@@ -415,7 +415,7 @@ Error Handling:
         } else {
           text = toJsonText(feed);
         }
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text }], structuredContent: { items: feed } as Record<string, unknown> };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
@@ -455,7 +455,7 @@ Error Handling:
           response_format === ResponseFormat.MARKDOWN
             ? `Comment added to ticket #${ticket_id} at ${formatDate(entry.CreatedDate)}.`
             : toJsonText(entry);
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text }], structuredContent: entry as unknown as Record<string, unknown> };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
@@ -496,7 +496,7 @@ Error Handling:
         } else {
           text = toJsonText(tasks);
         }
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text }], structuredContent: { items: tasks } as Record<string, unknown> };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
@@ -536,7 +536,7 @@ Error Handling:
           params.response_format === ResponseFormat.MARKDOWN
             ? `Task "${params.title}" created on ticket #${params.ticket_id} (task #${task.ID}).`
             : toJsonText(task);
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text }], structuredContent: task };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
@@ -601,7 +601,7 @@ Error Handling:
           params.response_format === ResponseFormat.MARKDOWN
             ? `Task #${params.task_id} updated on ticket #${params.ticket_id}.${params.percent_complete !== undefined ? ` (${params.percent_complete}% complete)` : ""}`
             : toJsonText(task);
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text }], structuredContent: task };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }

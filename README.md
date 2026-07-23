@@ -50,6 +50,12 @@ cp .env.example .env
 | `TEAMDYNAMIX_USERNAME` | Standard user/service-account login (alternative to BEID) |
 | `TEAMDYNAMIX_PASSWORD` | Password for user login |
 | `TEAMDYNAMIX_AUTH_METHOD` | Optional. Force `user` or `admin` if both are set |
+| `TRANSPORT` | `stdio` (default) or `http` |
+| `HOST` | HTTP bind address; defaults to `127.0.0.1` |
+| `PORT` | HTTP port; defaults to `3000` |
+| `MCP_AUTH_TOKEN` | Bearer token for HTTP clients; required when `HOST` is not loopback |
+| `MCP_ALLOWED_HOSTS` | Optional comma-separated HTTP Host allowlist, recommended for remote deployments |
+| `MCP_ALLOWED_ORIGINS` | Optional comma-separated browser Origin allowlist |
 
 If both auth methods are configured, admin key-based auth is preferred. The server
 caches the JWT and auto-refreshes it ~1 minute before expiry (TD tokens last 24 hours).
@@ -74,12 +80,33 @@ npm start
 
 ### Streamable HTTP
 
-For hosted/remote deployments:
+Local HTTP uses `127.0.0.1:3000` by default:
 
 ```bash
-TRANSPORT=http PORT=3000 npm start
-# Accepts POST requests at http://localhost:3000/mcp
+npm run start:http
+# MCP endpoint: http://127.0.0.1:3000/mcp
 ```
+
+For a hosted deployment, set `HOST=0.0.0.0`, a strong `MCP_AUTH_TOKEN`, and
+`MCP_ALLOWED_HOSTS` to the public hostname. Terminate TLS at a reverse proxy or
+hosting platform; major remote MCP clients require HTTPS. The HTTP transport is
+stateless and supports JSON responses, so `GET /mcp` and `DELETE /mcp` return
+`405 Method Not Allowed` as permitted by the MCP specification.
+
+## Read and write capabilities
+
+The server exposes both data retrieval and environment-changing tools:
+
+- **43 read tools** search, list, and retrieve TeamDynamix records. They declare
+  `readOnlyHint: true`.
+- **21 write tools** create, update, comment on, link, add, or remove records.
+  They declare `readOnlyHint: false`; destructive updates/removals also declare
+  `destructiveHint: true`.
+
+Client approval remains controlled by the MCP host. VS Code, Claude, ChatGPT,
+and OpenAI API applications can require confirmation before write calls. The
+TeamDynamix account configured on the server must itself have permission for the
+requested read or write operation.
 
 ## Using with VS Code (GitHub Copilot)
 
@@ -173,10 +200,64 @@ or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 }
 ```
 
+## Using with ChatGPT and OpenAI
+
+### OpenAI Responses API
+
+OpenAI's Responses API can call remote MCP servers over Streamable HTTP. Deploy
+this server behind HTTPS and pass its bearer token in `authorization`:
+
+```javascript
+const response = await openai.responses.create({
+  model: "gpt-5.6",
+  input: "Find my open TeamDynamix tickets and summarize them.",
+  tools: [{
+    type: "mcp",
+    server_label: "teamdynamix",
+    server_description: "Read and update TeamDynamix tickets, assets, CMDB, projects, people, and reports.",
+    server_url: "https://mcp.example.com/mcp",
+    authorization: process.env.MCP_AUTH_TOKEN,
+    require_approval: "always"
+  }]
+});
+```
+
+OpenAI requires approval by default before sharing data with a remote MCP server.
+Keep approval enabled for write tools; applications that trust the server can
+selectively skip approval for named read tools.
+
+### ChatGPT custom apps
+
+ChatGPT custom apps can expose both read operations and write actions from an MCP
+server. Use a publicly reachable HTTPS endpoint and configure app permissions so
+changes require approval. MCP authorization is optional at the protocol level,
+but this server intentionally requires `MCP_AUTH_TOKEN` when exposed remotely
+because it holds TeamDynamix credentials and provides write actions.
+
+The static bearer-token mode works directly with the OpenAI Responses API. A
+published or per-user ChatGPT app may require an MCP-compliant OAuth 2.1 resource
+server and authorization service instead; that user-delegated OAuth flow is not
+implemented here. Do not publish an unauthenticated instance.
+
+### OpenAI-compatible endpoints
+
+MCP support belongs to the **agent host/API implementation**, not the model wire
+format. An endpoint that only emulates OpenAI Chat Completions is not automatically
+an MCP client. It works with this server when either:
+
+- the endpoint implements the OpenAI Responses API `type: "mcp"` tool; or
+- an MCP-aware host such as VS Code, Claude Desktop, Cursor, or Continue uses that
+  endpoint as its model backend and calls this server separately.
+
+For endpoints without either capability, use a client-side MCP-to-function-calling
+adapter; no change to this server is required.
+
 ## Utility Scripts
 
 | Command | Description |
 |---|---|
+| `npm run test:mcp` | Build and verify discovery of all 64 read/write tools over stdio and authenticated HTTP |
+| `npm run check:scripts` | Type-check all utility and protocol-test scripts |
 | `npm run verify` | Authenticate and list all ticketing app IDs — run this first |
 | `npm run list-apps` | List all applications grouped by type; supports `--all` and `--type <T>` |
 | `npm run search-tickets -- --app-id <ID> [options]` | Search tickets from the CLI |

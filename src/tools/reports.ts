@@ -72,7 +72,7 @@ Returns: List of reports with their IDs, names, and descriptions.`,
         } else {
           text = toJsonText(reports);
         }
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text }], structuredContent: { items: reports } as Record<string, unknown> };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
@@ -171,7 +171,7 @@ Error Handling:
         } else {
           text = toJsonText(searches);
         }
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text }], structuredContent: { items: searches } as Record<string, unknown> };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
@@ -229,7 +229,7 @@ Error Handling:
         } else {
           text = toJsonText({ items: page, has_more, next_offset: has_more ? params.offset + page.length : undefined });
         }
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text }], structuredContent: { items: page, has_more } as Record<string, unknown> };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }

@@ -9,10 +9,12 @@
   },
   "scripts": {
     "start": "node dist/index.js",
-    "start:http": "TRANSPORT=http node dist/index.js",
+    "start:http": "cross-env TRANSPORT=http node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "build": "tsc && shx chmod +x dist/index.js",
-    "clean": "rm -rf dist",
+    "clean": "shx rm -rf dist",
+    "check:scripts": "tsc --project scripts/tsconfig.json",
+    "test:mcp": "npm run build && tsx scripts/mcp-protocol-test.ts",
     "verify": "tsx scripts/verify-connection.ts",
     "smoke-test": "tsx scripts/smoke-test.ts",
     "list-apps": "tsx scripts/list-apps.ts",
@@ -22,14 +24,17 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.6.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "axios": "^1.7.9",
-    "express": "^4.21.2",
+    "cors": "^2.8.6",
+    "dotenv": "^17.2.3",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
     "@types/express": "^4.17.21",
     "@types/node": "^22.10.0",
+    "cross-env": "^7.0.3",
     "shx": "^0.3.4",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"

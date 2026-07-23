@@ -6,6 +6,7 @@
  * to login behaviour only need to be made in one place.
  */
 
+import "dotenv/config";
 import { type AxiosInstance } from "axios";
 
 export function getAuthMethod(): "admin" | "user" {

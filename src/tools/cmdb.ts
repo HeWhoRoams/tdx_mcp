@@ -374,7 +374,7 @@ Error Handling:
         } else {
           text = toJsonText(feed);
         }
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text }], structuredContent: { items: feed } as Record<string, unknown> };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
@@ -410,7 +410,7 @@ Error Handling:
           response_format === ResponseFormat.MARKDOWN
             ? `Comment added to CI #${ci_id} at ${formatDate(entry.CreatedDate)}.`
             : toJsonText(entry);
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text }], structuredContent: entry as unknown as Record<string, unknown> };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
@@ -453,7 +453,7 @@ Error Handling:
         } else {
           text = toJsonText(rels);
         }
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text }], structuredContent: { items: rels } as Record<string, unknown> };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
@@ -490,7 +490,7 @@ Error Handling:
           response_format === ResponseFormat.MARKDOWN
             ? `Relationship added: CI #${ci_id} → CI #${related_ci_id} (type ID ${relationship_type_id}).`
             : toJsonText(result);
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text }], structuredContent: result };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
@@ -523,7 +523,7 @@ Error Handling:
           response_format === ResponseFormat.MARKDOWN
             ? `Relationship #${relationship_id} removed from CI #${ci_id}.`
             : toJsonText({ removed: true, ci_id, relationship_id });
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text }], structuredContent: { removed: true, ci_id, relationship_id } };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
@@ -556,7 +556,7 @@ Error Handling:
           response_format === ResponseFormat.MARKDOWN
             ? `CI #${ci_id} linked to ticket #${ticket_id}.`
             : toJsonText({ linked: true, ci_id, ticket_id });
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text }], structuredContent: { linked: true, ci_id, ticket_id } };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }

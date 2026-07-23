@@ -296,7 +296,7 @@ Error Handling:
         } else {
           text = toJsonText(feed);
         }
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text }], structuredContent: { items: feed } as Record<string, unknown> };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
@@ -329,7 +329,7 @@ Error Handling:
         const entry = await tdRequest<TdFeedEntry>(`/projects/${project_id}/feed`, "POST", body);
         const text =
           response_format === ResponseFormat.MARKDOWN ? `Comment added to project #${project_id}.` : toJsonText(entry);
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text }], structuredContent: entry as unknown as Record<string, unknown> };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }

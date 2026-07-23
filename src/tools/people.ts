@@ -119,7 +119,7 @@ Error Handling:
         } else {
           text = toJsonText(results);
         }
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text }], structuredContent: { items: results } as Record<string, unknown> };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
@@ -315,7 +315,7 @@ Error Handling:
         } else {
           text = toJsonText(members);
         }
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text }], structuredContent: { items: members } as Record<string, unknown> };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
@@ -350,7 +350,7 @@ Error Handling:
           response_format === ResponseFormat.MARKDOWN
             ? `**${username}** → UID: \`${uid}\``
             : toJsonText({ username, uid });
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text }], structuredContent: { username, uid } };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
@@ -382,7 +382,7 @@ Error Handling:
           response_format === ResponseFormat.MARKDOWN
             ? `Added ${uids.length} member(s) to group #${group_id}.`
             : toJsonText(result ?? { added: uids.length, group_id });
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text }], structuredContent: { added: uids.length, group_id } };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
@@ -414,7 +414,7 @@ Error Handling:
           response_format === ResponseFormat.MARKDOWN
             ? `Removed ${uids.length} member(s) from group #${group_id}.`
             : toJsonText(result ?? { removed: uids.length, group_id });
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text }], structuredContent: { removed: uids.length, group_id } };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
