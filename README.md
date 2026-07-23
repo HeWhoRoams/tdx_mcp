@@ -91,7 +91,11 @@ For a hosted deployment, set `HOST=0.0.0.0`, a strong `MCP_AUTH_TOKEN`, and
 `MCP_ALLOWED_HOSTS` to the public hostname. Terminate TLS at a reverse proxy or
 hosting platform; major remote MCP clients require HTTPS. The HTTP transport is
 stateless and supports JSON responses, so `GET /mcp` and `DELETE /mcp` return
-`405 Method Not Allowed` as permitted by the MCP specification.
+`405 Method Not Allowed` with `Allow: POST` as permitted by the MCP specification.
+Browser CORS preflights advertise only `POST`; GET and DELETE are not enabled as
+cross-origin methods. Browser clients must use an origin listed in
+`MCP_ALLOWED_ORIGINS`, while server-to-server MCP clients normally send no
+`Origin` header.
 
 ## Read and write capabilities
 
@@ -256,7 +260,7 @@ adapter; no change to this server is required.
 
 | Command | Description |
 |---|---|
-| `npm run test:mcp` | Build and verify discovery of all 64 read/write tools over stdio and authenticated HTTP |
+| `npm run test:mcp` | Build and verify discovery of all 64 read/write tools over stdio and authenticated HTTP, including auth, origin, method, and CORS preflight checks |
 | `npm run check:scripts` | Type-check all utility and protocol-test scripts |
 | `npm run verify` | Authenticate and list all ticketing app IDs — run this first |
 | `npm run list-apps` | List all applications grouped by type; supports `--all` and `--type <T>` |
