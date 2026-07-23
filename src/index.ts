@@ -142,7 +142,7 @@ async function runHTTP(): Promise<void> {
         "Mcp-Session-Id",
       ],
       exposedHeaders: ["Mcp-Session-Id"],
-      methods: ["GET", "POST", "DELETE", "OPTIONS"],
+      methods: ["POST"],
     })
   );
 

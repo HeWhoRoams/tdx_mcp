@@ -140,6 +140,21 @@ async function testHttp(): Promise<void> {
     }
 
     for (const method of ["GET", "DELETE"]) {
+      const preflight = await fetch(serverUrl, {
+        method: "OPTIONS",
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          Origin: "http://127.0.0.1",
+          "Access-Control-Request-Method": method,
+          "Access-Control-Request-Headers": "Authorization",
+        },
+      });
+      if (preflight.status !== 204 || preflight.headers.get("access-control-allow-methods") !== "POST") {
+        throw new Error(`http: expected ${method} /mcp preflight to omit ${method} from the allowed methods.`);
+      }
+    }
+
+    for (const method of ["GET", "DELETE"]) {
       const unsupportedMethod = await fetch(serverUrl, {
         method,
         headers: { Authorization: `Bearer ${authToken}` },
