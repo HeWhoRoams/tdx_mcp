@@ -5,8 +5,7 @@ export const CHARACTER_LIMIT = 25000;
 export const DEFAULT_LIMIT = 25;
 export const MAX_LIMIT = 100;
 
-// TeamDynamix Web API base path is always "<org base url>/TDWebApi/api".
-// TEAMDYNAMIX_BASE_URL should be the org's root, e.g. https://yourorg.teamdynamix.com
+// TEAMDYNAMIX_BASE_URL may be an organization root, Web API root, or API root.
 export function getApiBaseUrl(): string {
   const raw = process.env.TEAMDYNAMIX_BASE_URL;
   if (!raw) {
@@ -15,7 +14,7 @@ export function getApiBaseUrl(): string {
     );
   }
   const trimmed = raw.replace(/\/+$/, "");
-  if (trimmed.endsWith("/TDWebApi/api")) return trimmed;
-  if (trimmed.endsWith("/TDWebApi")) return `${trimmed}/api`;
+  if (trimmed.endsWith("/api")) return trimmed;
+  if (/(?:^|\/)\w*WebApi$/.test(trimmed)) return `${trimmed}/api`;
   return `${trimmed}/TDWebApi/api`;
 }

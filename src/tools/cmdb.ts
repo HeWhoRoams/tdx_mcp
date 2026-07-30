@@ -168,7 +168,8 @@ Error Handling:
     },
     async (params) => {
       try {
-        const body: Record<string, unknown> = {};
+        const fetchCount = Math.min(params.offset + params.limit + 1, 1001);
+        const body: Record<string, unknown> = { MaxResults: fetchCount };
         if (params.search_text) body.SearchText = params.search_text;
         if (params.serial_number) body.SerialNumber = params.serial_number;
         if (params.type_ids) body.TypeIDs = params.type_ids;

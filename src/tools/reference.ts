@@ -320,7 +320,7 @@ Error Handling:
         } else {
           text = toJsonText(attrs);
         }
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text }], structuredContent: { items: attrs } as Record<string, unknown> };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }

@@ -19,6 +19,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { timingSafeEqual } from "node:crypto";
+import rateLimit from "express-rate-limit";
 import cors from "cors";
 
 import { registerAuthTools } from "./tools/auth.js";
@@ -146,9 +148,34 @@ async function runHTTP(): Promise<void> {
     })
   );
 
+  // Rate limit only for remote deployments (loopback is trusted locally)
+  if (!isLoopback) {
+    app.use(
+      "/mcp",
+      rateLimit({
+        windowMs: 60_000,
+        max: 60,
+        standardHeaders: true,
+        legacyHeaders: false,
+        message: {
+          jsonrpc: "2.0",
+          error: { code: -32000, message: "Rate limit exceeded. Please slow down." },
+          id: null,
+        },
+      })
+    );
+  }
+
   if (authToken) {
+    const expectedAuth = `Bearer ${authToken}`;
+    const expectedBuf = Buffer.from(expectedAuth);
     app.use("/mcp", (req, res, next) => {
-      if (req.headers.authorization !== `Bearer ${authToken}`) {
+      const received = req.headers.authorization ?? "";
+      const receivedBuf = Buffer.from(received);
+      const isValid =
+        receivedBuf.length === expectedBuf.length &&
+        timingSafeEqual(receivedBuf, expectedBuf);
+      if (!isValid) {
         res.status(401).set("WWW-Authenticate", "Bearer").json({
           jsonrpc: "2.0",
           error: { code: -32001, message: "Unauthorized" },
@@ -159,6 +186,11 @@ async function runHTTP(): Promise<void> {
       next();
     });
   }
+
+  // Health check endpoint for load balancers and orchestrators.
+  app.get("/health", (_req, res) => {
+    res.json({ status: "ok", service: "teamdynamix-mcp-server" });
+  });
 
   // MCP Streamable HTTP spec requires GET for SSE server-to-client streams.
   // This server uses stateless JSON responses (no persistent sessions), so SSE

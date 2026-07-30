@@ -9,6 +9,16 @@
 import "dotenv/config";
 import { type AxiosInstance } from "axios";
 
+function requireJwt(value: unknown): string {
+  const token = typeof value === "string" ? value.trim() : String(value);
+  if (token.split(".").length !== 3) {
+    throw new Error(
+      "TeamDynamix authentication did not return a JWT. The API URL may be redirecting to the web login page."
+    );
+  }
+  return token;
+}
+
 export function getAuthMethod(): "admin" | "user" {
   const explicit = process.env.TEAMDYNAMIX_AUTH_METHOD?.toLowerCase();
   if (explicit === "admin" && process.env.TEAMDYNAMIX_BEID && process.env.TEAMDYNAMIX_WS_KEY) return "admin";
@@ -25,15 +35,23 @@ export function getAuthMethod(): "admin" | "user" {
 
 export async function authenticate(http: AxiosInstance, method: "admin" | "user"): Promise<string> {
   if (method === "admin") {
-    const res = await http.post<string>("/auth/loginadmin", {
-      BEID: process.env.TEAMDYNAMIX_BEID,
-      WebServicesKey: process.env.TEAMDYNAMIX_WS_KEY,
-    });
-    return typeof res.data === "string" ? res.data.trim() : String(res.data);
+    const res = await http.post<string>(
+      "/auth/loginadmin",
+      {
+        BEID: process.env.TEAMDYNAMIX_BEID,
+        WebServicesKey: process.env.TEAMDYNAMIX_WS_KEY,
+      },
+      { maxRedirects: 0 }
+    );
+    return requireJwt(res.data);
   }
-  const res = await http.post<string>("/auth/login", {
-    username: process.env.TEAMDYNAMIX_USERNAME,
-    password: process.env.TEAMDYNAMIX_PASSWORD,
-  });
-  return typeof res.data === "string" ? res.data.trim() : String(res.data);
+  const res = await http.post<string>(
+    "/auth/login",
+    {
+      username: process.env.TEAMDYNAMIX_USERNAME,
+      password: process.env.TEAMDYNAMIX_PASSWORD,
+    },
+    { maxRedirects: 0 }
+  );
+  return requireJwt(res.data);
 }

@@ -189,7 +189,7 @@ Error Handling:
     },
     async (params: TicketSearchInput) => {
       try {
-        const fetchCount = Math.min(params.offset + params.limit, 1000);
+        const fetchCount = Math.min(params.offset + params.limit + 1, 1001);
         const body: Record<string, unknown> = { MaxResults: fetchCount };
         if (params.search_text) body.SearchText = params.search_text;
         if (params.ticket_id) body.TicketID = params.ticket_id;

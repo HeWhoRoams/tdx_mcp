@@ -25,6 +25,16 @@ function decodeJwtExpiryMs(token: string): number | undefined {
   }
 }
 
+function requireJwt(value: unknown): string {
+  const token = typeof value === "string" ? value.trim() : String(value);
+  if (token.split(".").length !== 3) {
+    throw new TeamDynamixAuthError(
+      "TeamDynamix authentication did not return a JWT. The API URL may be redirecting to the web login page."
+    );
+  }
+  return token;
+}
+
 export class TeamDynamixAuthError extends Error {}
 
 /**
@@ -68,21 +78,20 @@ class TeamDynamixClient {
         const response = await this.http.post<string>("/auth/loginadmin", {
           BEID: process.env.TEAMDYNAMIX_BEID,
           WebServicesKey: process.env.TEAMDYNAMIX_WS_KEY,
-        });
-        token = response.data;
+        }, { maxRedirects: 0 });
+        token = requireJwt(response.data);
       } else {
         const response = await this.http.post<string>("/auth/login", {
           username: process.env.TEAMDYNAMIX_USERNAME,
           password: process.env.TEAMDYNAMIX_PASSWORD,
-        });
-        token = response.data;
+        }, { maxRedirects: 0 });
+        token = requireJwt(response.data);
       }
       // The login endpoints return the raw JWT string as text/plain, but axios
       // will hand it back as `response.data` either way.
-      const cleanToken = typeof token === "string" ? token.trim() : String(token);
-      const expiresAtMs = decodeJwtExpiryMs(cleanToken) ?? Date.now() + 23 * 60 * 60 * 1000;
-      this.cachedToken = { token: cleanToken, expiresAtMs };
-      return cleanToken;
+      const expiresAtMs = decodeJwtExpiryMs(token) ?? Date.now() + 23 * 60 * 60 * 1000;
+      this.cachedToken = { token, expiresAtMs };
+      return token;
     } catch (error) {
       throw new TeamDynamixAuthError(
         `Failed to authenticate with TeamDynamix using ${method} credentials: ${

@@ -69,6 +69,7 @@ export function registerIssueTools(server: McpServer): void {
       description: `Search for issues (not tickets — project-level issue tracking) across TeamDynamix projects.
 
 Args:
+  - app_id (number): The application ID
   - project_ids (number[], optional): Restrict search to these projects
   - search_text (string, optional)
   - status_ids (number[], optional)
@@ -84,7 +85,7 @@ Error Handling:
     },
     async (params) => {
       try {
-        const fetchCount = Math.min(params.offset + params.limit, 1000);
+        const fetchCount = Math.min(params.offset + params.limit + 1, 1001);
         const body: Record<string, unknown> = { MaxResults: fetchCount };
         if (params.project_ids) body.ProjectIDs = params.project_ids;
         if (params.search_text) body.SearchText = params.search_text;
@@ -118,6 +119,7 @@ Error Handling:
       description: `Gets full details on a single project issue.
 
 Args:
+  - app_id (number): The application ID
   - project_id (number): The project ID
   - issue_id (number): The issue ID
   - response_format ('markdown' | 'json', default 'markdown')
@@ -148,6 +150,7 @@ Error Handling:
       description: `Creates a new issue under a project.
 
 Args:
+  - app_id (number): The application ID
   - project_id (number): The project to create the issue under
   - title (string): Issue title
   - description, status_id, priority_name, responsible_uid (optional)
@@ -188,6 +191,7 @@ Error Handling:
       description: `Updates an existing project issue. This is a full-field edit endpoint on the TeamDynamix side, but this tool only sends the fields you provide, merged onto the existing issue.
 
 Args:
+  - app_id (number): The application ID
   - project_id (number): The project ID
   - issue_id (number): The issue ID to update
   - title, description, status_id, responsible_uid (all optional; at least one required)

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { tdRequest, handleApiError } from "../services/client.js";
 import { toJsonText, truncateMarkdown } from "../services/format.js";
 import { AppIdSchema, LimitSchema, OffsetSchema, ResponseFormatSchema } from "../schemas/common.js";
-import { ResponseFormat } from "../types.js";
+import { ResponseFormat, paginate } from "../types.js";
 
 // ── Schemas ───────────────────────────────────────────────────────────────────
 
@@ -201,7 +201,8 @@ Error Handling:
     async (params) => {
       try {
         const domainPath = params.domain === "cmdb" ? "cmdb" : params.domain === "assets" ? "assets" : "tickets";
-        const body = { MaxResults: params.offset + params.limit };
+        const fetchCount = Math.min(params.offset + params.limit + 1, 1001);
+        const body = { MaxResults: fetchCount };
         const result = await tdRequest<Record<string, unknown>>(
           `/${params.app_id}/${domainPath}/searches/${params.search_id}/results`,
           "POST",
@@ -210,26 +211,25 @@ Error Handling:
         // The results endpoint returns { ResultCount, Results[] } or similar
         const items = (result.Results ?? result.Items ?? result) as Array<Record<string, unknown>>;
         const arr = Array.isArray(items) ? items : [];
-        const page = arr.slice(params.offset, params.offset + params.limit);
-        const has_more = arr.length > params.offset + page.length;
+        const page = paginate(arr, params.limit, params.offset);
 
-        if (page.length === 0) {
+        if (page.items.length === 0) {
           return { content: [{ type: "text" as const, text: "No results found for this saved search." }] };
         }
         let text: string;
         if (params.response_format === ResponseFormat.MARKDOWN) {
-          const lines = [`# Saved Search Results`, "", `Showing ${page.length} of ${arr.length} result(s)`, ""];
-          for (const item of page) {
+          const lines = [`# Saved Search Results`, "", `Showing ${page.items.length} of ${page.total} result(s)`, ""];
+          for (const item of page.items) {
             const id = item.ID ?? item.Id ?? "?";
             const name = item.Title ?? item.Name ?? "(no name)";
             lines.push(`- **${name}** (#${id})`);
           }
-          if (has_more) lines.push("", `_More results available. Use offset=${params.offset + page.length} to continue._`);
+          if (page.has_more) lines.push("", `_More results available. Use offset=${page.next_offset} to continue._`);
           text = truncateMarkdown(lines.join("\n"));
         } else {
-          text = toJsonText({ items: page, has_more, next_offset: has_more ? params.offset + page.length : undefined });
+          text = toJsonText(page);
         }
-        return { content: [{ type: "text" as const, text }], structuredContent: { items: page, has_more } as Record<string, unknown> };
+        return { content: [{ type: "text" as const, text }], structuredContent: page as unknown as Record<string, unknown> };
       } catch (error) {
         return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
       }

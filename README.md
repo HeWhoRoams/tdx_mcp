@@ -44,7 +44,7 @@ cp .env.example .env
 
 | Variable | Description |
 |---|---|
-| `TEAMDYNAMIX_BASE_URL` | Your org's root URL, e.g. `https://yourorg.teamdynamix.com` |
+| `TEAMDYNAMIX_BASE_URL` | TeamDynamix organization root, Web API root, or complete API root. Examples: `https://yourorg.teamdynamix.com`, `https://yourorg.teamdynamix.com/TDWebApi`, or `https://yourorg.teamdynamix.com/SBTDWebApi/api` |
 | `TEAMDYNAMIX_BEID` | Admin service account BEID (found in TDAdmin → Organization) |
 | `TEAMDYNAMIX_WS_KEY` | Admin service account Web Services Key |
 | `TEAMDYNAMIX_USERNAME` | Standard user/service-account login (alternative to BEID) |
@@ -59,6 +59,19 @@ cp .env.example .env
 
 If both auth methods are configured, admin key-based auth is preferred. The server
 caches the JWT and auto-refreshes it ~1 minute before expiry (TD tokens last 24 hours).
+
+`TEAMDYNAMIX_BASE_URL` is normalized to the API root used by the server. For a
+standard organization URL, the server calls
+`https://yourorg.teamdynamix.com/TDWebApi/api`. For a sandbox or organization
+with a custom Web API path, provide that path explicitly, for example:
+
+```dotenv
+TEAMDYNAMIX_BASE_URL=https://cmich.teamdynamix.com/SBTDWebApi
+```
+
+This produces `https://cmich.teamdynamix.com/SBTDWebApi/api/auth/loginadmin`
+for admin authentication. Do not use the TDNext browser URL
+(`/SBTDNext/Login.aspx`) as the API base URL.
 
 ### Verify your setup
 
@@ -138,7 +151,7 @@ Create or edit `.vscode/mcp.json` in your project:
     {
       "id": "tdxBaseUrl",
       "type": "promptString",
-      "description": "TeamDynamix base URL (e.g. https://yourorg.teamdynamix.com)"
+      "description": "TeamDynamix org or API URL (e.g. https://yourorg.teamdynamix.com or https://yourorg.teamdynamix.com/SBTDWebApi)"
     },
     {
       "id": "tdxBeid",

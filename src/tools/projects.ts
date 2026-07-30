@@ -103,7 +103,7 @@ Error Handling:
     },
     async (params) => {
       try {
-        const fetchCount = Math.min(params.offset + params.limit, 1000);
+        const fetchCount = Math.min(params.offset + params.limit + 1, 1001);
         const body: Record<string, unknown> = { MaxResults: fetchCount };
         if (params.search_text) body.SearchText = params.search_text;
         if (params.status_ids) body.StatusIDs = params.status_ids;
