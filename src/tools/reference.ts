@@ -304,7 +304,10 @@ Error Handling:
         if (app_id !== undefined) queryParams.appId = app_id;
         const attrs = await tdRequest<Array<Record<string, unknown>>>(`/attributes/custom`, "GET", undefined, queryParams);
         if (!attrs || attrs.length === 0) {
-          return { content: [{ type: "text" as const, text: `No custom attributes found for component ID ${component_id}.` }] };
+          return {
+            content: [{ type: "text" as const, text: `No custom attributes found for component ID ${component_id}.` }],
+            structuredContent: { items: [] },
+          };
         }
         let text: string;
         if (response_format === ResponseFormat.MARKDOWN) {
@@ -322,7 +325,7 @@ Error Handling:
         }
         return { content: [{ type: "text" as const, text }], structuredContent: { items: attrs } as Record<string, unknown> };
       } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
+        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }], structuredContent: {} };
       }
     }
   );

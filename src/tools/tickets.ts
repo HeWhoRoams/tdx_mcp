@@ -559,6 +559,8 @@ Args:
 
 Returns: The updated ticket task.
 
+Concurrency warning: This uses a GET -> merge -> PUT flow because PATCH is unavailable, so concurrent edits may be overwritten. Use the API's version or ETag for optimistic concurrency when available.
+
 Error Handling:
   - Returns "Error: Resource not found" if task_id or ticket_id is invalid`,
       inputSchema: UpdateTicketTaskInputSchema.shape,

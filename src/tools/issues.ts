@@ -199,6 +199,8 @@ Args:
 
 Returns: The updated issue.
 
+Concurrency warning: This update uses a GET -> merge -> POST flow because PATCH is unavailable. Concurrent edits may be overwritten; use the API's version or ETag for optimistic concurrency when available.
+
 Error Handling:
   - Returns "Error: Resource not found" if project_id or issue_id is invalid`,
       inputSchema: UpdateIssueInputSchema.shape,

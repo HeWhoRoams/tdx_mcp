@@ -218,7 +218,7 @@ Error Handling:
         }
         let text: string;
         if (params.response_format === ResponseFormat.MARKDOWN) {
-          const lines = [`# Saved Search Results`, "", `Showing ${page.items.length} of ${page.total} result(s)`, ""];
+          const lines = [`# Saved Search Results`, "", `Showing ${page.items.length} fetched result(s)`, ""];
           for (const item of page.items) {
             const id = item.ID ?? item.Id ?? "?";
             const name = item.Title ?? item.Name ?? "(no name)";

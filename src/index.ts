@@ -189,7 +189,7 @@ async function runHTTP(): Promise<void> {
 
   // Health check endpoint for load balancers and orchestrators.
   app.get("/health", (_req, res) => {
-    res.json({ status: "ok", service: "teamdynamix-mcp-server" });
+    res.json({ status: "ok" });
   });
 
   // MCP Streamable HTTP spec requires GET for SSE server-to-client streams.
