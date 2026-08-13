@@ -8,7 +8,51 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 const expectedToolCount = 64;
-const expectedReadOnlyToolCount = 43;
+const expectedReadOnlyToolNames = new Set([
+  "teamdynamix_get_asset",
+  "teamdynamix_get_asset_feed",
+  "teamdynamix_get_ci",
+  "teamdynamix_get_ci_feed",
+  "teamdynamix_get_ci_relationships",
+  "teamdynamix_get_current_user",
+  "teamdynamix_get_group",
+  "teamdynamix_get_group_members",
+  "teamdynamix_get_issue",
+  "teamdynamix_get_person",
+  "teamdynamix_get_person_uid",
+  "teamdynamix_get_project",
+  "teamdynamix_get_project_feed",
+  "teamdynamix_get_report",
+  "teamdynamix_get_ticket",
+  "teamdynamix_get_ticket_feed",
+  "teamdynamix_get_ticket_tasks",
+  "teamdynamix_list_accounts",
+  "teamdynamix_list_applications",
+  "teamdynamix_list_asset_statuses",
+  "teamdynamix_list_ci_relationship_types",
+  "teamdynamix_list_ci_types",
+  "teamdynamix_list_custom_attributes",
+  "teamdynamix_list_locations",
+  "teamdynamix_list_product_models",
+  "teamdynamix_list_reports",
+  "teamdynamix_list_saved_searches",
+  "teamdynamix_list_ticket_forms",
+  "teamdynamix_list_ticket_impacts",
+  "teamdynamix_list_ticket_priorities",
+  "teamdynamix_list_ticket_sources",
+  "teamdynamix_list_ticket_statuses",
+  "teamdynamix_list_ticket_types",
+  "teamdynamix_list_ticket_urgencies",
+  "teamdynamix_lookup_people",
+  "teamdynamix_run_saved_search",
+  "teamdynamix_search_assets",
+  "teamdynamix_search_cis",
+  "teamdynamix_search_groups",
+  "teamdynamix_search_issues",
+  "teamdynamix_search_people",
+  "teamdynamix_search_projects",
+  "teamdynamix_search_tickets",
+]);
 const authToken = "mcp-protocol-test-token";
 const baseEnvironment = Object.fromEntries(
   Object.entries({
@@ -52,14 +96,20 @@ async function validateClient(client: Client, transportName: string, readOnly = 
   }
   const result = await client.listTools();
   if (readOnly) {
-    if (result.tools.length !== expectedReadOnlyToolCount) {
-      throw new Error(`${transportName}: expected ${expectedReadOnlyToolCount} read-only tools, received ${result.tools.length}.`);
-    }
     if (result.tools.some((tool) => tool.annotations?.readOnlyHint !== true)) {
       throw new Error(`${transportName}: read-only server exposed a non-read-only tool.`);
     }
-    if (result.tools.some((tool) => tool.name === "teamdynamix_create_ticket")) {
-      throw new Error(`${transportName}: read-only server exposed teamdynamix_create_ticket.`);
+    const actualToolNames = new Set(result.tools.map((tool) => tool.name));
+    const missingTools = [...expectedReadOnlyToolNames].filter((name) => !actualToolNames.has(name));
+    const unexpectedTools = [...actualToolNames].filter((name) => !expectedReadOnlyToolNames.has(name));
+    if (missingTools.length > 0 || unexpectedTools.length > 0 || actualToolNames.size !== result.tools.length) {
+      throw new Error(
+        `${transportName}: read-only tool set mismatch.${
+          missingTools.length > 0 ? ` Missing: ${missingTools.join(", ")}.` : ""
+        }${unexpectedTools.length > 0 ? ` Unexpected: ${unexpectedTools.join(", ")}.` : ""}${
+          actualToolNames.size !== result.tools.length ? " Duplicate tool names detected." : ""
+        }`
+      );
     }
     console.log(`${transportName}: ${result.tools.length} read-only tools`);
     return;
