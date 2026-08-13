@@ -34,29 +34,47 @@ import { registerReferenceTools } from "./tools/reference.js";
 import { registerReportTools } from "./tools/reports.js";
 
 function createServer(): McpServer {
+  const readOnly = process.env.TEAMDYNAMIX_READ_ONLY === "true";
   const server = new McpServer(
     {
       name: "teamdynamix-mcp-server",
       version: "1.0.0",
     },
     {
-      instructions:
-        "Use read-only teamdynamix_search_*, teamdynamix_get_*, teamdynamix_list_*, and teamdynamix_lookup_* tools to retrieve TeamDynamix data. " +
-        "Use teamdynamix_create_*, teamdynamix_update_*, teamdynamix_add_*, teamdynamix_remove_*, and teamdynamix_link_* tools to change TeamDynamix. " +
-        "Write tools are explicitly annotated as non-read-only; clients should obtain user approval according to their policy before invoking them. " +
-        "Discover application and reference-data IDs with list tools before creating or updating records.",
+      instructions: readOnly
+        ? "This TeamDynamix MCP server is configured read-only. Use the available search, get, list, lookup, and report tools to retrieve data. Write tools are not registered."
+        :
+          "Use read-only teamdynamix_search_*, teamdynamix_get_*, teamdynamix_list_*, and teamdynamix_lookup_* tools to retrieve TeamDynamix data. " +
+          "Use teamdynamix_create_*, teamdynamix_update_*, teamdynamix_add_*, teamdynamix_remove_*, and teamdynamix_link_* tools to change TeamDynamix. " +
+          "Write tools are explicitly annotated as non-read-only; clients should obtain user approval according to their policy before invoking them. " +
+          "Discover application and reference-data IDs with list tools before creating or updating records.",
     }
   );
 
-  registerAuthTools(server);
-  registerTicketTools(server);
-  registerAssetTools(server);
-  registerCmdbTools(server);
-  registerProjectTools(server);
-  registerIssueTools(server);
-  registerPeopleTools(server);
-  registerReferenceTools(server);
-  registerReportTools(server);
+  // Filter at registration time so write tools cannot be invoked in read-only mode.
+  const registrationServer = readOnly
+    ? new Proxy(server, {
+        get(target, property, receiver) {
+          if (property !== "registerTool") return Reflect.get(target, property, receiver);
+          return ((...args: unknown[]) => {
+            const toolConfig = args[1] as { annotations?: { readOnlyHint?: boolean } };
+            if (toolConfig.annotations?.readOnlyHint !== true) return;
+            const registerTool = target.registerTool.bind(target) as (...argumentsList: unknown[]) => unknown;
+            return registerTool(...args);
+          }) as McpServer["registerTool"];
+        },
+      })
+    : server;
+
+  registerAuthTools(registrationServer);
+  registerTicketTools(registrationServer);
+  registerAssetTools(registrationServer);
+  registerCmdbTools(registrationServer);
+  registerProjectTools(registrationServer);
+  registerIssueTools(registrationServer);
+  registerPeopleTools(registrationServer);
+  registerReferenceTools(registrationServer);
+  registerReportTools(registrationServer);
 
   return server;
 }

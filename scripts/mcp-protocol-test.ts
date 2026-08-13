@@ -8,6 +8,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 const expectedToolCount = 64;
+const expectedReadOnlyToolCount = 43;
 const authToken = "mcp-protocol-test-token";
 const baseEnvironment = Object.fromEntries(
   Object.entries({
@@ -41,12 +42,28 @@ function validateTools(tools: Tool[], transportName: string): void {
   console.log(`${transportName}: ${tools.length} tools (${readTools.length} read, ${writeTools.length} write)`);
 }
 
-async function validateClient(client: Client, transportName: string): Promise<void> {
+async function validateClient(client: Client, transportName: string, readOnly = false): Promise<void> {
   const instructions = client.getInstructions();
-  if (!instructions?.includes("change TeamDynamix")) {
+  if (readOnly && !instructions?.includes("configured read-only")) {
+    throw new Error(`${transportName}: read-only server instructions are missing.`);
+  }
+  if (!readOnly && !instructions?.includes("change TeamDynamix")) {
     throw new Error(`${transportName}: server instructions do not explicitly advertise write capability.`);
   }
   const result = await client.listTools();
+  if (readOnly) {
+    if (result.tools.length !== expectedReadOnlyToolCount) {
+      throw new Error(`${transportName}: expected ${expectedReadOnlyToolCount} read-only tools, received ${result.tools.length}.`);
+    }
+    if (result.tools.some((tool) => tool.annotations?.readOnlyHint !== true)) {
+      throw new Error(`${transportName}: read-only server exposed a non-read-only tool.`);
+    }
+    if (result.tools.some((tool) => tool.name === "teamdynamix_create_ticket")) {
+      throw new Error(`${transportName}: read-only server exposed teamdynamix_create_ticket.`);
+    }
+    console.log(`${transportName}: ${result.tools.length} read-only tools`);
+    return;
+  }
   validateTools(result.tools, transportName);
 }
 
@@ -63,6 +80,24 @@ async function testStdio(): Promise<void> {
   try {
     await client.connect(transport);
     await validateClient(client, "stdio");
+  } finally {
+    await client.close();
+  }
+}
+
+async function testReadOnlyStdio(): Promise<void> {
+  const client = new Client({ name: "teamdynamix-mcp-read-only-test", version: "1.0.0" });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: ["dist/index.js"],
+    cwd: process.cwd(),
+    env: { ...baseEnvironment, TEAMDYNAMIX_READ_ONLY: "true" },
+    stderr: "pipe",
+  });
+
+  try {
+    await client.connect(transport);
+    await validateClient(client, "read-only stdio", true);
   } finally {
     await client.close();
   }
@@ -188,5 +223,6 @@ async function testHttp(): Promise<void> {
 }
 
 await testStdio();
+await testReadOnlyStdio();
 await testHttp();
 console.log("MCP protocol compatibility checks passed.");

@@ -50,6 +50,7 @@ cp .env.example .env
 | `TEAMDYNAMIX_USERNAME` | Standard user/service-account login (alternative to BEID) |
 | `TEAMDYNAMIX_PASSWORD` | Password for user login |
 | `TEAMDYNAMIX_AUTH_METHOD` | Optional. Force `user` or `admin` if both are set |
+| `TEAMDYNAMIX_READ_ONLY` | Optional. Set exactly to `true` to omit all tools annotated as write-capable |
 | `TRANSPORT` | `stdio` (default) or `http` |
 | `HOST` | HTTP bind address; defaults to `127.0.0.1` |
 | `PORT` | HTTP port; defaults to `3000` |
@@ -124,6 +125,22 @@ Client approval remains controlled by the MCP host. VS Code, Claude, ChatGPT,
 and OpenAI API applications can require confirmation before write calls. The
 TeamDynamix account configured on the server must itself have permission for the
 requested read or write operation.
+
+### Read-only server mode
+
+For a server instance that must not expose write operations, set:
+
+```dotenv
+TEAMDYNAMIX_READ_ONLY=true
+```
+
+In this mode, the server does not register any tool whose annotation is
+`readOnlyHint: false`, so clients cannot discover or invoke those write tools.
+This is an enforcement boundary inside the MCP server, not merely a client
+approval hint. It is still best practice to use a dedicated TeamDynamix account
+with only the required read permissions, because API credentials are an
+independent defense layer. The default remains the full read/write tool set when
+the variable is unset or has any value other than the exact string `true`.
 
 ## Using with VS Code (GitHub Copilot)
 
