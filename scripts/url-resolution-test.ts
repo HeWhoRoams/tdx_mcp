@@ -7,10 +7,10 @@ const cases = [
   ["https://example.teamdynamix.com/", "https://example.teamdynamix.com/TDWebApi/api"],
   ["https://example.teamdynamix.com/TDWebApi", "https://example.teamdynamix.com/TDWebApi/api"],
   ["https://example.teamdynamix.com/TDWebApi/", "https://example.teamdynamix.com/TDWebApi/api"],
-  ["https://cmich.teamdynamix.com/SBTDWebApi", "https://cmich.teamdynamix.com/SBTDWebApi/api"],
-  ["https://cmich.teamdynamix.com/SBTDWebApi/", "https://cmich.teamdynamix.com/SBTDWebApi/api"],
+  ["https://sandbox.teamdynamix.com/SBTDWebApi", "https://sandbox.teamdynamix.com/SBTDWebApi/api"],
+  ["https://sandbox.teamdynamix.com/SBTDWebApi/", "https://sandbox.teamdynamix.com/SBTDWebApi/api"],
   ["https://example.teamdynamix.com/TDWebApi/api", "https://example.teamdynamix.com/TDWebApi/api"],
-  ["https://cmich.teamdynamix.com/SBTDWebApi/api", "https://cmich.teamdynamix.com/SBTDWebApi/api"],
+  ["https://sandbox.teamdynamix.com/SBTDWebApi/api", "https://sandbox.teamdynamix.com/SBTDWebApi/api"],
 ] as const;
 
 const original = process.env.TEAMDYNAMIX_BASE_URL;

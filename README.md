@@ -67,10 +67,10 @@ standard organization URL, the server calls
 with a custom Web API path, provide that path explicitly, for example:
 
 ```dotenv
-TEAMDYNAMIX_BASE_URL=https://cmich.teamdynamix.com/SBTDWebApi
+TEAMDYNAMIX_BASE_URL=https://yourorg.teamdynamix.com/SBTDWebApi
 ```
 
-This produces `https://cmich.teamdynamix.com/SBTDWebApi/api/auth/loginadmin`
+This produces `https://yourorg.teamdynamix.com/SBTDWebApi/api/auth/loginadmin`
 for admin authentication. Do not use the TDNext browser URL
 (`/SBTDNext/Login.aspx`) as the API base URL.
 
