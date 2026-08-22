@@ -22,10 +22,49 @@ assets, configuration items (CMDB), projects, issues, people, groups, and report
 
 > **Maintenance:** Update this table in the same PR that adds or removes a tool.
 
-All list/search tools support pagination (`limit`/`offset`) and a
-`response_format` of `markdown` (human-readable, default) or `json`
-(full structured data). Responses are capped at 25,000 characters with a
-message telling the agent how to narrow the query or paginate.
+All list/search tools support pagination (`limit`/`offset`, plus an opaque
+`next_cursor`) and a `response_format` of `markdown` (human-readable, default)
+or `json` (structured data in `structuredContent`). Responses are capped at
+25,000 characters with a message telling the agent how to narrow the query or
+paginate.
+
+The server also exposes MCP **resources** (`tdx://applications`,
+`tdx://{appId}/ticket-reference`) so hosts can pin reference data to context
+without a tool round trip, and **prompts** (`triage_ticket`,
+`weekly_ticket_report`) that demonstrate the intended tool composition.
+
+### Working conversationally
+
+These behaviors exist to keep an agent from burning turns on bookkeeping:
+
+- **Default application** — set `TEAMDYNAMIX_DEFAULT_APP_ID` and `app_id`
+  becomes optional everywhere. In an organization with dozens of ticketing
+  applications this removes the "which app?" question from most conversations.
+- **Emails instead of UIDs** — every person argument (`responsible_uid`,
+  `requestor_uid`, `owning_customer_uid`, `project_manager_uid`, `notify_uids`,
+  and the `*_uids` search filters) accepts an email address and resolves it
+  server-side against a cached lookup. Ambiguous addresses come back as an error
+  listing the candidate UIDs, so the agent can retry in one turn.
+- **Self-correcting errors** — when TeamDynamix rejects a create or update with
+  a 400, the response appends the valid `status_id`/`type_id`/`priority_id`
+  values for that application, read from cache only (never an extra API call).
+- **Clickable records** — rendered tickets include a TDNext link derived from
+  the configured base URL, so answers can be handed straight to a person.
+- **Honest counts** — TeamDynamix search has no total-count endpoint, so a total
+  rendered as `251+` means "at least", not "exactly". Use `count_only=true` for
+  "how many" questions and `verbosity="compact"` to scan many records cheaply.
+
+### Response format and payload size
+
+A tool response never serializes its payload twice:
+
+- `markdown` (default) returns a single rendered text block.
+- `json` returns `structuredContent` plus a one-line pointer.
+
+An `outputSchema` is deliberately not declared. The MCP SDK requires
+`structuredContent` on every result once a tool declares one, which would force
+markdown responses to carry the full JSON payload as well — exactly the
+duplication this policy removes.
 
 ## Setup
 
@@ -50,13 +89,30 @@ cp .env.example .env
 | `TEAMDYNAMIX_USERNAME` | Standard user/service-account login (alternative to BEID) |
 | `TEAMDYNAMIX_PASSWORD` | Password for user login |
 | `TEAMDYNAMIX_AUTH_METHOD` | Optional. Force `user` or `admin` if both are set |
+| `TEAMDYNAMIX_DEFAULT_APP_ID` | Optional. Default application for app-scoped tools, so `app_id` can be omitted |
 | `TEAMDYNAMIX_READ_ONLY` | Optional. Set exactly to `true` to omit all tools annotated as write-capable |
+| `TEAMDYNAMIX_TOKEN_CACHE` | `memory` (default) or `file` to persist the JWT across short-lived processes |
+| `TEAMDYNAMIX_TIMEOUT_MS` | Per-request timeout; default `15000` |
+| `TEAMDYNAMIX_MAX_SOCKETS` | Keep-alive connection pool size; default `8` |
+| `TEAMDYNAMIX_MAX_RETRIES` | Retries for 503 responses; default `2` |
+| `TEAMDYNAMIX_MAX_RATE_LIMIT_WAITS` | Separate budget for 429 waits; default `3` |
+| `TEAMDYNAMIX_MAX_RETRY_DELAY_MS` | Ceiling on any single retry wait; default `60000` |
+| `TEAMDYNAMIX_RATE_LIMIT` | Outgoing requests allowed per window; default `30` |
+| `TEAMDYNAMIX_RATE_WINDOW_MS` | Rate limit window; default `60000` |
+| `TEAMDYNAMIX_CACHE_TTL_MS` | Reference-data cache TTL; default `600000`, `0` disables |
+| `TEAMDYNAMIX_SEARCH_CACHE_TTL_MS` | Search page cache TTL; default `60000`, `0` disables |
+| `TEAMDYNAMIX_RECORD_CACHE_TTL_MS` | Single-record and child-collection cache TTL; default `30000`, `0` disables |
+| `TEAMDYNAMIX_CACHE_MAX_ENTRIES` | Bound on each cache; default `500` |
+| `TDX_LOG_LEVEL` | `debug`, `info` (default), `warn`, `error`, or `silent`. Structured JSON logs go to stderr |
 | `TRANSPORT` | `stdio` (default) or `http` |
 | `HOST` | HTTP bind address; defaults to `127.0.0.1` |
 | `PORT` | HTTP port; defaults to `3000` |
 | `MCP_AUTH_TOKEN` | Bearer token for HTTP clients; required when `HOST` is not loopback |
 | `MCP_ALLOWED_HOSTS` | Optional comma-separated HTTP Host allowlist, recommended for remote deployments |
 | `MCP_ALLOWED_ORIGINS` | Optional comma-separated browser Origin allowlist |
+
+All configuration is validated once at startup; invalid or missing values fail
+fast with a single message listing every problem.
 
 If both auth methods are configured, admin key-based auth is preferred. The server
 caches the JWT and auto-refreshes it ~1 minute before expiry (TD tokens last 24 hours).
@@ -290,9 +346,15 @@ adapter; no change to this server is required.
 
 | Command | Description |
 |---|---|
+| `npm test` | Unit suite (vitest, no network): config, client, cache, pagination, cursors, search, tool framework |
 | `npm run test:mcp` | Build and verify discovery of all 64 read/write tools over stdio and authenticated HTTP, including auth, origin, method, and CORS preflight checks |
+| `npm run test:all` | Unit suite + script type-check + protocol test |
+| `npm run bench` | Measure cold start, warm calls, cache hits, and search paging; accepts `-- --app-id <ID>` |
+| `npm run measure:window` | Sweep search `MaxResults` to see how latency scales with window size |
 | `npm run check:scripts` | Type-check all utility and protocol-test scripts |
 | `npm run verify` | Authenticate and list all ticketing app IDs — run this first |
+| `npm run smoke-test` | Exercise every read endpoint; performs no writes |
+| `npm run smoke-test:write` | Write-path checks. Requires `TDX_ALLOW_WRITE_TESTS=true` and `--app-id`, and refuses non-sandbox URLs. Tier A (default) creates nothing; `--tier b` creates one permanent ticket |
 | `npm run list-apps` | List all applications grouped by type; supports `--all` and `--type <T>` |
 | `npm run search-tickets -- --app-id <ID> [options]` | Search tickets from the CLI |
 
@@ -321,11 +383,51 @@ adapter; no change to this server is required.
 - **Reports**: `teamdynamix_get_report` (with `with_data=true`) and `teamdynamix_run_saved_search` are the most powerful read operations for complex queries — prefer these over chaining many search calls.
 - **Rate limits**: TD commonly enforces 30–60 calls/60s per IP. The server auto-retries 429 and 503 responses with 2s then 4s exponential backoff before surfacing the error.
 
+## Performance architecture
+
+- **Connection reuse**: keep-alive HTTP(S) agents, so requests after the first
+  skip the TLS handshake.
+- **Proactive rate limiting**: a sliding-window limiter queues outgoing calls
+  under TeamDynamix's per-IP quota instead of provoking 429s and paying the
+  recovery cost. 429/503 responses honor `Retry-After` with jittered backoff.
+- **Single-flight de-duplication**: identical concurrent reads collapse into one
+  upstream request. Writes are never coalesced, so two identical creates always
+  produce two records.
+- **Caching**: three bounded TTL-LRU tiers — *reference* data (applications,
+  types, statuses, priorities, locations, accounts, people) served with
+  stale-while-revalidate so it is effectively instant after first use; *search*
+  pages so paging and re-sorting never re-run a query; and *record* data (single
+  records, feeds, tasks, relationships, members). A write purges the search and
+  record tiers for its domain and deliberately leaves reference data intact.
+- **Token warm-up and reuse**: the JWT and application list are fetched in the
+  background at startup, and `TEAMDYNAMIX_TOKEN_CACHE=file` persists the token
+  (mode `0600`, in the OS temp directory) so short-lived CLI processes skip the
+  login round trip.
+- **Bounded search window**: TeamDynamix search endpoints have no offset
+  parameter, so results are paged client-side. The first page fetches only what
+  it needs; the moment an agent pages, the server pulls the whole 251-row window
+  once and serves every later page from cache. (Measured on a sandbox: ~440 ms
+  fixed cost plus ~1 ms per row, so widening once beats refetching per page.)
+  Beyond that window the server steers agents to saved searches and reports.
+  Cursors are signed against the search and sort they came from, so a replayed
+  cursor fails loudly instead of returning rows from a different query.
+- **Rate limiting is per process**: the limiter protects a long-running server,
+  but TeamDynamix enforces its quota per IP, so other processes or integrations
+  can consume it. A 429 is therefore treated as a wait instruction rather than a
+  failure: it honors `Retry-After` up to `TEAMDYNAMIX_MAX_RETRY_DELAY_MS` and
+  draws on its own budget (`TEAMDYNAMIX_MAX_RATE_LIMIT_WAITS`), so a shared-quota
+  stall does not consume the retries reserved for genuine errors.
+- **Observability**: structured JSON logs on stderr with per-request timing,
+  cache hit/miss, and retry counts, plus `GET /healthz` on the HTTP transport.
+
+Run `npm run bench` before and after configuration changes to measure the impact.
+
 ## Development
 
 ```bash
 npm run dev      # tsx watch — no build step needed
 npm run build    # tsc → dist/
+npm test         # vitest unit suite
 npx @modelcontextprotocol/inspector node dist/index.js   # interactive tool testing
 ```
 
@@ -333,29 +435,37 @@ npx @modelcontextprotocol/inspector node dist/index.js   # interactive tool test
 
 ```
 src/
-├── index.ts            # Entry point: transport selection + tool registration
-├── types.ts            # Shared TS interfaces + paginate() helper
-├── constants.ts        # CHARACTER_LIMIT, pagination defaults, getApiBaseUrl()
+├── index.ts            # Transport selection, registration, health, shutdown
+├── config.ts           # Single zod-validated environment parse
+├── constants.ts        # CHARACTER_LIMIT, pagination + search-window bounds
+├── types.ts            # Shared TS interfaces, paginate(), cursor codec
+├── framework/
+│   ├── defineTool.ts   # Declarative tool contract: format policy, errors, caching, timing
+│   └── annotations.ts  # READ / CREATE / MUTATE annotation presets
 ├── schemas/
-│   └── common.ts       # Reusable Zod schemas (AppIdSchema, LimitSchema, etc.)
+│   └── common.ts       # Reusable Zod schemas (AppIdSchema, PagingShape, etc.)
 ├── services/
-│   ├── client.ts       # JWT auth/refresh, tdRequest(), 429/503 retry
-│   └── format.ts       # toJsonText(), truncateMarkdown(), formatDate()
-└── tools/
+│   ├── client.ts       # Auth, keep-alive, rate limiting, dedup, retry
+│   ├── rate-limiter.ts # Sliding-window limiter
+│   ├── token-store.ts  # In-memory or file-backed JWT store
+│   ├── cache.ts        # Bounded TTL-LRU + search keys + invalidation
+│   ├── search.ts       # Cached search + client-side paging
+│   ├── format.ts       # Renderers and truncation
+│   └── logger.ts       # Structured stderr logging + counters
+├── resources/          # tdx:// reference-data resources
+├── prompts/            # triage_ticket, weekly_ticket_report
+└── tools/              # One definition array per domain
     ├── auth.ts
-    ├── tickets.ts      # search, get, create, update, feed, tasks
-    ├── assets.ts       # search, get, create, update, feed
-    ├── cmdb.ts         # search, get, create, update, feed, relationships, link to ticket
+    ├── tickets.ts
+    ├── assets.ts
+    ├── cmdb.ts
     ├── projects.ts
     ├── issues.ts
-    ├── people.ts       # lookup, search, groups
-    ├── reference.ts    # all list_* lookup tools
-    └── reports.ts      # list/get reports, list/run saved searches
-scripts/
-├── verify-connection.ts   # npm run verify
-├── list-apps.ts           # npm run list-apps
-└── search-tickets.ts      # npm run search-tickets
-└── smoke-test.ts          # npm run smoke-test
+    ├── people.ts
+    ├── reference.ts
+    └── reports.ts
+test/                  # vitest unit suite
+scripts/               # verify, list-apps, search-tickets, smoke-test, bench, protocol test
 ```
 
 ## License

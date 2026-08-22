@@ -1,338 +1,223 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { tdRequest, handleApiError } from "../services/client.js";
-import { toJsonText, truncateMarkdown, formatDate, nameWithId } from "../services/format.js";
-import { LimitSchema, OffsetSchema, ResponseFormatSchema } from "../schemas/common.js";
-import { ResponseFormat, TdFeedEntry, TdProject, paginate } from "../types.js";
+import { getConfig } from "../config.js";
+import { CREATE, MUTATE, READ } from "../framework/annotations.js";
+import { defineTool, ToolInputError, type AnyToolDefinition } from "../framework/defineTool.js";
+import { ChildPagingShape, PagingShape, PersonRefSchema, ResponseFormatSchema, sortBySchema } from "../schemas/common.js";
+import { tdRequest } from "../services/client.js";
+import { resolvePersonUid, resolvePersonUids } from "../services/context.js";
+import { formatDate, nameWithId, renderFeed } from "../services/format.js";
+import { pagingFooter, renderCount, resultsHeading, searchPage } from "../services/search.js";
+import { paginate, type TdFeedEntry, type TdProject } from "../types.js";
 
-const SearchProjectsInputSchema = z
+const ProjectIdSchema = z.number().int().positive().describe("The project ID.");
+
+const SORT_FIELDS = { name: "Name", start: "StartDate", end: "EndDate", id: "ID" };
+
+const SearchInput = z
   .object({
     search_text: z.string().max(200).optional().describe("Free-text search against project name."),
     status_ids: z.array(z.number().int()).optional().describe("Filter by ProjectStatus IDs."),
-    is_active: z.boolean().optional().describe("If true, only active projects. If false, only inactive."),
-    project_manager_uids: z.array(z.string()).optional().describe("Filter by project manager person UID."),
-    limit: LimitSchema,
-    offset: OffsetSchema,
-    response_format: ResponseFormatSchema,
+    is_active: z.boolean().optional().describe("True for only active projects, false for only inactive."),
+    project_manager_uids: z
+      .array(z.string())
+      .optional()
+      .describe("Filter by project manager. Accepts UIDs or email addresses."),
+    sort_by: sortBySchema(["name", "start", "end", "id"]),
+    ...PagingShape,
   })
   .strict();
 
-const GetProjectInputSchema = z
-  .object({
-    project_id: z.number().int().positive().describe("The project ID."),
-    response_format: ResponseFormatSchema,
-  })
-  .strict();
+const GetInput = z.object({ project_id: ProjectIdSchema, response_format: ResponseFormatSchema }).strict();
 
-const CreateProjectInputSchema = z
+const CreateInput = z
   .object({
     name: z.string().min(1).max(500).describe("The project name."),
     type_id: z.number().int().positive().optional().describe("The ProjectType ID."),
     status_id: z.number().int().positive().optional().describe("The initial ProjectStatus ID."),
     account_id: z.number().int().positive().optional().describe("The owning Account/Department ID."),
-    project_manager_uid: z.string().optional().describe("Person UID of the project manager."),
+    project_manager_uid: PersonRefSchema("The project manager").optional(),
     start_date: z.string().optional().describe("ISO 8601 planned start date."),
     end_date: z.string().optional().describe("ISO 8601 planned end date."),
-    description: z.string().max(50000).optional(),
-    notify_new_manager: z.boolean().default(false),
+    description: z.string().max(50000).optional().describe("The project description."),
+    notify_new_manager: z.boolean().default(false).describe("Email the assigned project manager."),
     response_format: ResponseFormatSchema,
   })
   .strict();
 
-const UpdateProjectInputSchema = z
+const UpdateInput = z
   .object({
-    project_id: z.number().int().positive().describe("The project ID to update."),
-    name: z.string().min(1).max(500).optional(),
-    status_id: z.number().int().positive().optional(),
-    project_manager_uid: z.string().optional(),
-    start_date: z.string().optional(),
-    end_date: z.string().optional(),
-    description: z.string().max(50000).optional(),
+    project_id: ProjectIdSchema,
+    name: z.string().min(1).max(500).optional().describe("New project name."),
+    status_id: z.number().int().positive().optional().describe("New ProjectStatus ID."),
+    project_manager_uid: PersonRefSchema("The new project manager").optional(),
+    start_date: z.string().optional().describe("ISO 8601 planned start date."),
+    end_date: z.string().optional().describe("ISO 8601 planned end date."),
+    description: z.string().max(50000).optional().describe("New project description."),
     response_format: ResponseFormatSchema,
   })
   .strict();
 
-const GetProjectFeedInputSchema = z
+const FeedInput = z.object({ project_id: ProjectIdSchema, ...ChildPagingShape }).strict();
+
+const CommentInput = z
   .object({
-    project_id: z.number().int().positive().describe("The project ID."),
+    project_id: ProjectIdSchema,
+    comment: z.string().min(1).max(50000).describe("The comment text to add."),
+    notify_uids: z.array(z.string()).optional().describe("People to notify. Accepts UIDs or email addresses."),
     response_format: ResponseFormatSchema,
   })
   .strict();
 
-const AddProjectCommentInputSchema = z
-  .object({
-    project_id: z.number().int().positive().describe("The project ID to comment on."),
-    comment: z.string().min(1).max(50000).describe("The comment text."),
-    notify_uids: z.array(z.string()).optional(),
-    response_format: ResponseFormatSchema,
-  })
-  .strict();
-
-function formatProjectMarkdown(p: TdProject): string {
+function renderProject(project: TdProject): string {
   return [
-    `## ${p.Name} (#${p.ID})`,
-    `- **Status**: ${nameWithId(p.StatusName, p.StatusID)}`,
-    `- **Project Manager**: ${p.ProjectManagerName ?? "N/A"}`,
-    `- **Start**: ${formatDate(p.StartDate)}`,
-    `- **End**: ${formatDate(p.EndDate)}`,
-    `- **Percent Complete**: ${p.PercentComplete ?? 0}%`,
+    `## ${project.Name} (#${project.ID})`,
+    `- **Status**: ${nameWithId(project.StatusName, project.StatusID)}`,
+    `- **Project Manager**: ${project.ProjectManagerName ?? "N/A"}`,
+    `- **Start**: ${formatDate(project.StartDate)}`,
+    `- **End**: ${formatDate(project.EndDate)}`,
+    `- **Percent Complete**: ${project.PercentComplete ?? 0}%`,
   ].join("\n");
 }
 
-export function registerProjectTools(server: McpServer): void {
-  server.registerTool(
-    "teamdynamix_search_projects",
-    {
-      title: "Search TeamDynamix Projects",
-      description: `Search for projects across the TeamDynamix Projects/Workspaces application.
+const PROJECTS = { domain: "projects" };
 
-Args:
-  - search_text (string, optional): Free-text search on project name
-  - status_ids (number[], optional): Filter by ProjectStatus ID
-  - is_active (boolean, optional)
-  - project_manager_uids (string[], optional)
-  - limit (default 25), offset (default 0)
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: Paginated list of matching projects.
-
-Error Handling:
-  - Returns "No projects found matching the given criteria" if search is empty`,
-      inputSchema: SearchProjectsInputSchema.shape,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+export const projectTools: AnyToolDefinition[] = [
+  defineTool({
+    name: "teamdynamix_search_projects",
+    title: "Search TeamDynamix Projects",
+    description:
+      "Searches projects by name, status, active state, or project manager.\nThis endpoint is organization-wide and needs no app_id.",
+    input: SearchInput,
+    annotations: READ,
+    handler: async (args) => {
+      const body: Record<string, unknown> = {};
+      if (args.search_text) body.SearchText = args.search_text;
+      if (args.status_ids) body.StatusIDs = args.status_ids;
+      if (args.is_active !== undefined) body.IsActive = args.is_active;
+      const managers = await resolvePersonUids(args.project_manager_uids);
+      if (managers) body.ProjectManagerUids = managers;
+      return searchPage<TdProject>("/projects/search", body, args, { sortFields: SORT_FIELDS });
     },
-    async (params) => {
-      try {
-        const fetchCount = Math.min(params.offset + params.limit + 1, 1001);
-        const body: Record<string, unknown> = { MaxResults: fetchCount };
-        if (params.search_text) body.SearchText = params.search_text;
-        if (params.status_ids) body.StatusIDs = params.status_ids;
-        if (params.is_active !== undefined) body.IsActive = params.is_active;
-        if (params.project_manager_uids) body.ProjectManagerUids = params.project_manager_uids;
-
-        const results = await tdRequest<TdProject[]>(`/projects/search`, "POST", body);
-        const page = paginate(results ?? [], params.limit, params.offset);
-        if (page.items.length === 0) {
-          return { content: [{ type: "text" as const, text: "No projects found matching the given criteria." }] };
-        }
-        let text: string;
-        if (params.response_format === ResponseFormat.MARKDOWN) {
-          const lines = [`# Project Search Results`, "", `Found ${page.total} project(s), showing ${page.items.length}`, ""];
-          for (const p of page.items) lines.push(formatProjectMarkdown(p), "");
-          if (page.has_more) lines.push(`_More results available. Use offset=${page.next_offset} to continue._`);
-          text = truncateMarkdown(lines.join("\n"));
-        } else {
-          text = toJsonText(page);
-        }
-        return { content: [{ type: "text" as const, text }], structuredContent: page as unknown as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
-
-  server.registerTool(
-    "teamdynamix_get_project",
-    {
-      title: "Get TeamDynamix Project",
-      description: `Gets full details on a single project, including custom attributes.
-
-Args:
-  - project_id (number): The project ID
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: Full project details.
-
-Error Handling:
-  - Returns "Error: Resource not found" if project_id is invalid`,
-      inputSchema: GetProjectInputSchema.shape,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    isEmpty: (page, args) => !args.count_only && page.items.length === 0,
+    emptyMessage: "No projects found matching the given criteria.",
+    render: (page, args) => {
+      if (args.count_only) return renderCount(page, "project");
+      const lines = resultsHeading("Project Search Results", page, "project");
+      for (const project of page.items) lines.push(renderProject(project), "");
+      lines.push(...pagingFooter(page));
+      return lines.join("\n");
     },
-    async ({ project_id, response_format }) => {
-      try {
-        const project = await tdRequest<TdProject>(`/projects/${project_id}`);
-        const text =
-          response_format === ResponseFormat.MARKDOWN
-            ? truncateMarkdown(formatProjectMarkdown(project))
-            : toJsonText(project);
-        return { content: [{ type: "text" as const, text }], structuredContent: project as unknown as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
+  }),
 
-  server.registerTool(
-    "teamdynamix_create_project",
-    {
-      title: "Create TeamDynamix Project",
-      description: `Creates a new project.
-
-Args:
-  - name (string): Project name
-  - type_id, status_id, account_id, project_manager_uid, start_date, end_date, description (optional)
-  - notify_new_manager (boolean, default false)
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: The newly created project, including its assigned ID.
-
-Error Handling:
-  - Returns "Error: ... rejected the request as invalid (400)" if required fields are missing
-  - Returns "Error: Permission denied" if the account can't create projects`,
-      inputSchema: CreateProjectInputSchema.shape,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  defineTool({
+    name: "teamdynamix_get_project",
+    title: "Get TeamDynamix Project",
+    description: "Gets one project in full, including custom attributes.",
+    input: GetInput,
+    annotations: READ,
+    handler: (args) => {
+      const path = `/projects/${args.project_id}`;
+      return tdRequest<TdProject>(path, {
+        cacheKey: path,
+        cacheTtlMs: getConfig().cache.recordTtlMs,
+        cacheTier: "record",
+      });
     },
-    async (params) => {
-      try {
-        const body: Record<string, unknown> = { Name: params.name };
-        if (params.type_id) body.TypeID = params.type_id;
-        if (params.status_id) body.StatusID = params.status_id;
-        if (params.account_id) body.AccountID = params.account_id;
-        if (params.project_manager_uid) body.ProjectManagerUid = params.project_manager_uid;
-        if (params.start_date) body.StartDate = params.start_date;
-        if (params.end_date) body.EndDate = params.end_date;
-        if (params.description) body.Description = params.description;
+    render: (project) => renderProject(project),
+  }),
 
-        const project = await tdRequest<TdProject>(`/projects`, "POST", body, {
-          notifyNewManager: params.notify_new_manager,
-        });
-        const text =
-          params.response_format === ResponseFormat.MARKDOWN
-            ? truncateMarkdown(`# Project Created\n\n${formatProjectMarkdown(project)}`)
-            : toJsonText(project);
-        return { content: [{ type: "text" as const, text }], structuredContent: project as unknown as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
-
-  server.registerTool(
-    "teamdynamix_update_project",
-    {
-      title: "Update TeamDynamix Project",
-      description: `Patches an existing project, changing only the fields provided.
-
-Args:
-  - project_id (number): The project ID to update
-  - name, status_id, project_manager_uid, start_date, end_date, description (all optional; at least one required)
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: The updated project.
-
-Error Handling:
-  - Returns "Error: Resource not found" if project_id is invalid`,
-      inputSchema: UpdateProjectInputSchema.shape,
-      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+  defineTool({
+    name: "teamdynamix_create_project",
+    title: "Create TeamDynamix Project",
+    description: "Creates a project. Only name is required.",
+    input: CreateInput,
+    annotations: CREATE,
+    invalidates: PROJECTS,
+    handler: async (args) => {
+      const body: Record<string, unknown> = { Name: args.name };
+      if (args.type_id) body.TypeID = args.type_id;
+      if (args.status_id) body.StatusID = args.status_id;
+      if (args.account_id) body.AccountID = args.account_id;
+      if (args.project_manager_uid) body.ProjectManagerUid = await resolvePersonUid(args.project_manager_uid);
+      if (args.start_date) body.StartDate = args.start_date;
+      if (args.end_date) body.EndDate = args.end_date;
+      if (args.description) body.Description = args.description;
+      return tdRequest<TdProject>("/projects", {
+        method: "POST",
+        data: body,
+        params: { notifyNewManager: args.notify_new_manager },
+      });
     },
-    async (params) => {
-      try {
-        const ops: Array<{ op: "replace"; path: string; value: unknown }> = [];
-        if (
-          params.name === undefined &&
-          params.status_id === undefined &&
-          params.project_manager_uid === undefined &&
-          params.start_date === undefined &&
-          params.end_date === undefined &&
-          params.description === undefined
-        ) {
-          return {
-            isError: true,
-            content: [{ type: "text" as const, text: "Error: At least one field to update must be provided (name, status_id, project_manager_uid, start_date, end_date, or description)." }],
-          };
-        }
-        if (params.name !== undefined) ops.push({ op: "replace", path: "/Name", value: params.name });
-        if (params.status_id !== undefined) ops.push({ op: "replace", path: "/StatusID", value: params.status_id });
-        if (params.project_manager_uid !== undefined)
-          ops.push({ op: "replace", path: "/ProjectManagerUid", value: params.project_manager_uid });
-        if (params.start_date !== undefined) ops.push({ op: "replace", path: "/StartDate", value: params.start_date });
-        if (params.end_date !== undefined) ops.push({ op: "replace", path: "/EndDate", value: params.end_date });
-        if (params.description !== undefined) ops.push({ op: "replace", path: "/Description", value: params.description });
+    render: (project) => `# Project Created\n\n${renderProject(project)}`,
+  }),
 
-        const project = await tdRequest<TdProject>(`/projects/${params.project_id}`, "PATCH", ops);
-        const text =
-          params.response_format === ResponseFormat.MARKDOWN
-            ? truncateMarkdown(`# Project Updated\n\n${formatProjectMarkdown(project)}`)
-            : toJsonText(project);
-        return { content: [{ type: "text" as const, text }], structuredContent: project as unknown as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
+  defineTool({
+    name: "teamdynamix_update_project",
+    title: "Update TeamDynamix Project",
+    description: "Patches a project, changing only the fields you supply.\nAt least one updatable field is required.",
+    input: UpdateInput,
+    annotations: MUTATE,
+    invalidates: PROJECTS,
+    handler: async (args) => {
+      const operations: Array<{ op: "replace"; path: string; value: unknown }> = [];
+      const add = (path: string, value: unknown) => {
+        if (value !== undefined) operations.push({ op: "replace", path, value });
+      };
+      add("/Name", args.name);
+      add("/StatusID", args.status_id);
+      add(
+        "/ProjectManagerUid",
+        args.project_manager_uid ? await resolvePersonUid(args.project_manager_uid) : undefined
+      );
+      add("/StartDate", args.start_date);
+      add("/EndDate", args.end_date);
+      add("/Description", args.description);
+      if (operations.length === 0) {
+        throw new ToolInputError(
+          "At least one field to update must be provided (name, status_id, project_manager_uid, start_date, end_date, or description)."
+        );
       }
-    }
-  );
-
-  server.registerTool(
-    "teamdynamix_get_project_feed",
-    {
-      title: "Get TeamDynamix Project Feed",
-      description: `Gets the feed entries (comments/updates) for a project, newest first.
-
-Args:
-  - project_id (number): The project ID
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: List of feed entries.
-
-Error Handling:
-  - Returns "Error: Resource not found" if project_id is invalid`,
-      inputSchema: GetProjectFeedInputSchema.shape,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      return tdRequest<TdProject>(`/projects/${args.project_id}`, { method: "PATCH", data: operations });
     },
-    async ({ project_id, response_format }) => {
-      try {
-        const feed = await tdRequest<TdFeedEntry[]>(`/projects/${project_id}/feed`);
-        if (!feed || feed.length === 0) {
-          return { content: [{ type: "text" as const, text: "No feed entries found for this project." }] };
-        }
-        let text: string;
-        if (response_format === ResponseFormat.MARKDOWN) {
-          const lines = [`# Feed for Project #${project_id}`, ""];
-          for (const entry of feed) {
-            lines.push(`### ${entry.CreatedByName ?? "Unknown"} — ${formatDate(entry.CreatedDate)}`);
-            lines.push(entry.Body ?? "(no content)");
-            lines.push("");
-          }
-          text = truncateMarkdown(lines.join("\n"));
-        } else {
-          text = toJsonText(feed);
-        }
-        return { content: [{ type: "text" as const, text }], structuredContent: { items: feed } as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
+    render: (project) => `# Project Updated\n\n${renderProject(project)}`,
+  }),
 
-  server.registerTool(
-    "teamdynamix_add_project_comment",
-    {
-      title: "Add TeamDynamix Project Comment",
-      description: `Adds a comment (feed entry) to a project.
-
-Args:
-  - project_id (number): The project ID
-  - comment (string): The comment text
-  - notify_uids (string[], optional): Person UIDs to notify
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: The created feed entry.
-
-Error Handling:
-  - Returns "Error: Resource not found" if project_id is invalid`,
-      inputSchema: AddProjectCommentInputSchema.shape,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  defineTool({
+    name: "teamdynamix_get_project_feed",
+    title: "Get TeamDynamix Project Feed",
+    description: "Gets a project's feed entries (comments and updates), newest first.\nPage with limit/offset.",
+    input: FeedInput,
+    annotations: READ,
+    handler: async (args) => {
+      const path = `/projects/${args.project_id}/feed`;
+      const feed = await tdRequest<TdFeedEntry[]>(path, {
+        cacheKey: path,
+        cacheTtlMs: getConfig().cache.recordTtlMs,
+        cacheTier: "record",
+      });
+      return paginate(feed ?? [], args.limit, args.offset);
     },
-    async ({ project_id, comment, notify_uids, response_format }) => {
-      try {
-        const body: Record<string, unknown> = { Comments: comment };
-        if (notify_uids?.length) body.Notify = notify_uids;
-        const entry = await tdRequest<TdFeedEntry>(`/projects/${project_id}/feed`, "POST", body);
-        const text =
-          response_format === ResponseFormat.MARKDOWN ? `Comment added to project #${project_id}.` : toJsonText(entry);
-        return { content: [{ type: "text" as const, text }], structuredContent: entry as unknown as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
-}
+    isEmpty: (page) => page.items.length === 0,
+    emptyMessage: "No feed entries found for this project.",
+    render: (page, args) => {
+      const body = renderFeed(`Feed for Project #${args.project_id} (${page.count} of ${page.total})`, page.items);
+      return page.has_more ? `${body}\n_More entries available. Use offset=${page.next_offset}._` : body;
+    },
+  }),
+
+  defineTool({
+    name: "teamdynamix_add_project_comment",
+    title: "Add TeamDynamix Project Comment",
+    description: "Adds a comment (feed entry) to a project, optionally notifying people.",
+    input: CommentInput,
+    annotations: CREATE,
+    invalidates: PROJECTS,
+    handler: async (args) => {
+      const body: Record<string, unknown> = { Comments: args.comment };
+      const notify = await resolvePersonUids(args.notify_uids);
+      if (notify?.length) body.Notify = notify;
+      return tdRequest<TdFeedEntry>(`/projects/${args.project_id}/feed`, { method: "POST", data: body });
+    },
+    render: (_entry, args) => `Comment added to project #${args.project_id}.`,
+  }),
+];

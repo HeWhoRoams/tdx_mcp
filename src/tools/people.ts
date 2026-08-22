@@ -1,11 +1,20 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { tdRequest, handleApiError } from "../services/client.js";
-import { toJsonText, truncateMarkdown } from "../services/format.js";
-import { LimitSchema, OffsetSchema, ResponseFormatSchema } from "../schemas/common.js";
-import { ResponseFormat, TdGroup, TdPerson, paginate } from "../types.js";
+import { getConfig } from "../config.js";
+import { CREATE, MUTATE, READ } from "../framework/annotations.js";
+import { defineTool, items, type AnyToolDefinition } from "../framework/defineTool.js";
+import { ChildPagingShape, PagingShape, ResponseFormatSchema, sortBySchema } from "../schemas/common.js";
+import { tdRequest } from "../services/client.js";
+import { resolvePersonUids } from "../services/context.js";
+import { truncate } from "../services/format.js";
+import { pagingFooter, renderCount, resultsHeading, searchPage } from "../services/search.js";
+import { paginate, type TdGroup, type TdPerson } from "../types.js";
 
-const LookupPeopleInputSchema = z
+const GroupIdSchema = z.number().int().positive().describe("The group ID.");
+
+const PEOPLE_SORT = { name: "FullName", email: "PrimaryEmail" };
+const GROUP_SORT = { name: "Name", id: "ID" };
+
+const LookupInput = z
   .object({
     search_text: z.string().min(1).max(200).describe("Text to search against name/email/username."),
     max_results: z.number().int().min(1).max(50).default(10).describe("Maximum number of results (1-50, default 10)."),
@@ -13,412 +22,234 @@ const LookupPeopleInputSchema = z
   })
   .strict();
 
-const SearchPeopleInputSchema = z
+const SearchPeopleInput = z
   .object({
     search_text: z.string().max(200).optional().describe("LIKE-based filter against name/email/username."),
     is_active: z.boolean().optional().describe("Filter to active or inactive accounts."),
     is_employee: z.boolean().optional().describe("Filter to employees only."),
     account_ids: z.array(z.number().int()).optional().describe("Filter by Account/Department ID."),
-    limit: LimitSchema,
-    offset: OffsetSchema,
-    response_format: ResponseFormatSchema,
+    sort_by: sortBySchema(["name", "email"]),
+    ...PagingShape,
   })
   .strict();
 
-const GetPersonInputSchema = z
-  .object({
-    uid: z.string().min(1).describe("The person's UID (GUID)."),
-    response_format: ResponseFormatSchema,
-  })
-  .strict();
+const GetPersonInput = z.object({ uid: z.string().min(1).describe("The person's UID (GUID)."), response_format: ResponseFormatSchema }).strict();
 
-const SearchGroupsInputSchema = z
+const SearchGroupsInput = z
   .object({
     search_text: z.string().max(200).optional().describe("Free-text search against group name."),
-    is_active: z.boolean().optional(),
-    limit: LimitSchema,
-    offset: OffsetSchema,
-    response_format: ResponseFormatSchema,
+    is_active: z.boolean().optional().describe("Filter to active or inactive groups."),
+    sort_by: sortBySchema(["name", "id"]),
+    ...PagingShape,
   })
   .strict();
 
-const GetGroupInputSchema = z
+const GetGroupInput = z.object({ group_id: GroupIdSchema, response_format: ResponseFormatSchema }).strict();
+
+const GroupMembersInput = z.object({ group_id: GroupIdSchema, ...ChildPagingShape }).strict();
+
+const GetPersonUidInput = z
   .object({
-    group_id: z.number().int().positive().describe("The group ID."),
+    username: z.string().min(1).max(200).describe("The person's login username, not their display name."),
     response_format: ResponseFormatSchema,
   })
   .strict();
 
-const GetGroupMembersInputSchema = z
+const ManageMembersInput = z
   .object({
-    group_id: z.number().int().positive().describe("The group ID."),
+    group_id: GroupIdSchema,
+    uids: z.array(z.string().min(1)).min(1).describe("People to add or remove. Accepts UIDs or email addresses."),
     response_format: ResponseFormatSchema,
   })
   .strict();
 
-const GetPersonUidInputSchema = z
-  .object({
-    username: z.string().min(1).max(200).describe("The person's username (login name, not display name)."),
-    response_format: ResponseFormatSchema,
-  })
-  .strict();
-
-const ManageGroupMembersInputSchema = z
-  .object({
-    group_id: z.number().int().positive().describe("The group ID."),
-    uids: z.array(z.string().min(1)).min(1).describe("Array of person UIDs to add or remove."),
-    response_format: ResponseFormatSchema,
-  })
-  .strict();
-
-function formatPersonMarkdown(p: TdPerson): string {
+function renderPerson(person: TdPerson): string {
   return [
-    `## ${p.FullName} (${p.UID})`,
-    `- **Email**: ${p.PrimaryEmail ?? "N/A"}`,
-    `- **Active**: ${p.IsActive === undefined ? "N/A" : p.IsActive ? "Yes" : "No"}`,
+    `## ${person.FullName} (${person.UID})`,
+    `- **Email**: ${person.PrimaryEmail ?? "N/A"}`,
+    `- **Active**: ${person.IsActive === undefined ? "N/A" : person.IsActive ? "Yes" : "No"}`,
   ].join("\n");
 }
 
-export function registerPeopleTools(server: McpServer): void {
-  server.registerTool(
-    "teamdynamix_lookup_people",
-    {
-      title: "Lookup TeamDynamix People",
-      description: `Performs a fast, restricted lookup of TeamDynamix people by name/email/username. Returns limited fields (no full profile) — ideal for resolving a name to a UID before other calls.
+const GROUPS = { domain: "groups" };
 
-Args:
-  - search_text (string): The search text
-  - max_results (number, default 10, max 50)
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: List of matching people with minimal fields (UID, name, email).
-
-Examples:
-  - Use when: "Who is Jane Smith's UID?" -> search_text="Jane Smith"
-  - Don't use when: You need full profile details (use teamdynamix_get_person with the UID instead)
-
-Error Handling:
-  - Returns "No people found matching..." if search is empty`,
-      inputSchema: LookupPeopleInputSchema.shape,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    },
-    async ({ search_text, max_results, response_format }) => {
-      try {
-        const results = await tdRequest<TdPerson[]>(`/people/lookup`, "GET", undefined, {
-          searchText: search_text,
-          maxResults: max_results,
-        });
-        if (!results || results.length === 0) {
-          return { content: [{ type: "text" as const, text: `No people found matching '${search_text}'.` }] };
-        }
-        let text: string;
-        if (response_format === ResponseFormat.MARKDOWN) {
-          const lines = [`# People matching '${search_text}'`, ""];
-          for (const p of results) lines.push(`- **${p.FullName}** (${p.UID})${p.PrimaryEmail ? ` — ${p.PrimaryEmail}` : ""}`);
-          text = truncateMarkdown(lines.join("\n"));
-        } else {
-          text = toJsonText(results);
-        }
-        return { content: [{ type: "text" as const, text }], structuredContent: { items: results } as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
+export const peopleTools: AnyToolDefinition[] = [
+  defineTool({
+    name: "teamdynamix_lookup_people",
+    title: "Lookup TeamDynamix People",
+    description:
+      "Fast name/email/username lookup returning minimal fields.\n" +
+      "Use this to resolve a person's name to the UID that other tools need.",
+    input: LookupInput,
+    annotations: READ,
+    handler: async (args) =>
+      items(
+        await tdRequest<TdPerson[]>("/people/lookup", {
+          params: { searchText: args.search_text, maxResults: args.max_results },
+        })
+      ),
+    isEmpty: (data) => data.items.length === 0,
+    emptyMessage: "No people found matching that search text.",
+    render: (data, args) => {
+      const lines = [`# People matching '${args.search_text}'`, ""];
+      for (const person of data.items) {
+        lines.push(`- **${person.FullName}** (${person.UID})${person.PrimaryEmail ? ` — ${person.PrimaryEmail}` : ""}`);
       }
-    }
-  );
-
-  server.registerTool(
-    "teamdynamix_search_people",
-    {
-      title: "Search TeamDynamix People",
-      description: `Search for users in the TeamDynamix people database with structured filters. Returns more fields than teamdynamix_lookup_people, but still not full profile detail.
-
-Args:
-  - search_text (string, optional): LIKE-based filter
-  - is_active, is_employee (boolean, optional)
-  - account_ids (number[], optional)
-  - limit (default 25), offset (default 0)
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: Paginated list of matching people.
-
-Error Handling:
-  - Returns "No people found matching the given criteria" if search is empty`,
-      inputSchema: SearchPeopleInputSchema.shape,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      return truncate(lines.join("\n"));
     },
-    async (params) => {
-      try {
-        const fetchCount = Math.min(params.offset + params.limit + 1, 1001);
-        const body: Record<string, unknown> = { MaxResults: fetchCount };
-        if (params.search_text) body.SearchText = params.search_text;
-        if (params.is_active !== undefined) body.IsActive = params.is_active;
-        if (params.is_employee !== undefined) body.IsEmployee = params.is_employee;
-        if (params.account_ids) body.AccountIDs = params.account_ids;
+  }),
 
-        const results = await tdRequest<TdPerson[]>(`/people/search`, "POST", body);
-        const page = paginate(results ?? [], params.limit, params.offset);
-        if (page.items.length === 0) {
-          return { content: [{ type: "text" as const, text: "No people found matching the given criteria." }] };
-        }
-        let text: string;
-        if (params.response_format === ResponseFormat.MARKDOWN) {
-          const lines = [`# People Search Results`, "", `Found ${page.total}, showing ${page.items.length}`, ""];
-          for (const p of page.items) lines.push(formatPersonMarkdown(p), "");
-          if (page.has_more) lines.push(`_More results available. Use offset=${page.next_offset} to continue._`);
-          text = truncateMarkdown(lines.join("\n"));
-        } else {
-          text = toJsonText(page);
-        }
-        return { content: [{ type: "text" as const, text }], structuredContent: page as unknown as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
-
-  server.registerTool(
-    "teamdynamix_get_person",
-    {
-      title: "Get TeamDynamix Person",
-      description: `Gets full profile details for a single person, including custom attributes and permissions.
-
-Args:
-  - uid (string): The person's UID
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: Full person details.
-
-Error Handling:
-  - Returns "Error: Resource not found" if uid is invalid`,
-      inputSchema: GetPersonInputSchema.shape,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  defineTool({
+    name: "teamdynamix_search_people",
+    title: "Search TeamDynamix People",
+    description:
+      "Searches people with structured filters (active, employee, account).\n" +
+      "Returns more fields than teamdynamix_lookup_people; use teamdynamix_get_person for the full profile.",
+    input: SearchPeopleInput,
+    annotations: READ,
+    handler: async (args) => {
+      const body: Record<string, unknown> = {};
+      if (args.search_text) body.SearchText = args.search_text;
+      if (args.is_active !== undefined) body.IsActive = args.is_active;
+      if (args.is_employee !== undefined) body.IsEmployee = args.is_employee;
+      if (args.account_ids) body.AccountIDs = args.account_ids;
+      return searchPage<TdPerson>("/people/search", body, args, { sortFields: PEOPLE_SORT });
     },
-    async ({ uid, response_format }) => {
-      try {
-        const person = await tdRequest<TdPerson>(`/people/${uid}`);
-        const text =
-          response_format === ResponseFormat.MARKDOWN
-            ? truncateMarkdown(formatPersonMarkdown(person))
-            : toJsonText(person);
-        return { content: [{ type: "text" as const, text }], structuredContent: person as unknown as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
-
-  server.registerTool(
-    "teamdynamix_search_groups",
-    {
-      title: "Search TeamDynamix Groups",
-      description: `Search for groups in the TeamDynamix people database.
-
-Args:
-  - search_text (string, optional)
-  - is_active (boolean, optional)
-  - limit (default 25), offset (default 0)
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: Paginated list of matching groups.
-
-Error Handling:
-  - Returns "No groups found matching the given criteria" if search is empty`,
-      inputSchema: SearchGroupsInputSchema.shape,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    isEmpty: (page, args) => !args.count_only && page.items.length === 0,
+    emptyMessage: "No people found matching the given criteria.",
+    render: (page, args) => {
+      if (args.count_only) return renderCount(page, "person");
+      const lines = resultsHeading("People Search Results", page, "person");
+      for (const person of page.items) lines.push(renderPerson(person), "");
+      lines.push(...pagingFooter(page));
+      return lines.join("\n");
     },
-    async (params) => {
-      try {
-        const fetchCount = Math.min(params.offset + params.limit + 1, 1001);
-        const body: Record<string, unknown> = { MaxResults: fetchCount };
-        if (params.search_text) body.NameLike = params.search_text;
-        if (params.is_active !== undefined) body.IsActive = params.is_active;
+  }),
 
-        const results = await tdRequest<TdGroup[]>(`/groups/search`, "POST", body);
-        const page = paginate(results ?? [], params.limit, params.offset);
-        if (page.items.length === 0) {
-          return { content: [{ type: "text" as const, text: "No groups found matching the given criteria." }] };
-        }
-        let text: string;
-        if (params.response_format === ResponseFormat.MARKDOWN) {
-          const lines = [`# Group Search Results`, "", `Found ${page.total}, showing ${page.items.length}`, ""];
-          for (const g of page.items) lines.push(`- **${g.Name}** (#${g.ID})${g.Description ? ` — ${g.Description}` : ""}`);
-          if (page.has_more) lines.push("", `_More results available. Use offset=${page.next_offset} to continue._`);
-          text = truncateMarkdown(lines.join("\n"));
-        } else {
-          text = toJsonText(page);
-        }
-        return { content: [{ type: "text" as const, text }], structuredContent: page as unknown as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
+  defineTool({
+    name: "teamdynamix_get_person",
+    title: "Get TeamDynamix Person",
+    description: "Gets one person's full profile, including custom attributes and permissions.",
+    input: GetPersonInput,
+    annotations: READ,
+    handler: (args) =>
+      tdRequest<TdPerson>(`/people/${args.uid}`, {
+        cacheKey: `/people/${args.uid}`,
+        cacheTtlMs: getConfig().cache.referenceTtlMs,
+      }),
+    render: (person) => renderPerson(person),
+  }),
 
-  server.registerTool(
-    "teamdynamix_get_group",
-    {
-      title: "Get TeamDynamix Group",
-      description: `Gets details on a single group.
-
-Args:
-  - group_id (number): The group ID
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: Group details.
-
-Error Handling:
-  - Returns "Error: Resource not found" if group_id is invalid`,
-      inputSchema: GetGroupInputSchema.shape,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  defineTool({
+    name: "teamdynamix_get_person_uid",
+    title: "Get TeamDynamix Person UID by Username",
+    description:
+      "Resolves an exact login username to the person's UID.\n" +
+      "Use teamdynamix_lookup_people instead when you only have a display name.",
+    input: GetPersonUidInput,
+    annotations: READ,
+    handler: async (args) => {
+      const uid = await tdRequest<string>(`/people/getuid/${encodeURIComponent(args.username)}`, {
+        cacheKey: `/people/getuid/${args.username}`,
+        cacheTtlMs: getConfig().cache.referenceTtlMs,
+      });
+      return { username: args.username, uid };
     },
-    async ({ group_id, response_format }) => {
-      try {
-        const group = await tdRequest<TdGroup>(`/groups/${group_id}`);
-        const text =
-          response_format === ResponseFormat.MARKDOWN
-            ? truncateMarkdown(`## ${group.Name} (#${group.ID})\n- **Description**: ${group.Description ?? "N/A"}\n- **Active**: ${group.IsActive ? "Yes" : "No"}`)
-            : toJsonText(group);
-        return { content: [{ type: "text" as const, text }], structuredContent: group as unknown as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
+    render: (data) => `**${data.username}** → UID: \`${data.uid}\``,
+  }),
 
-  server.registerTool(
-    "teamdynamix_get_group_members",
-    {
-      title: "Get TeamDynamix Group Members",
-      description: `Gets the users belonging to a group.
-
-Args:
-  - group_id (number): The group ID
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: List of group members.
-
-Error Handling:
-  - Returns "Error: Resource not found" if group_id is invalid`,
-      inputSchema: GetGroupMembersInputSchema.shape,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  defineTool({
+    name: "teamdynamix_search_groups",
+    title: "Search TeamDynamix Groups",
+    description: "Searches groups by name and active state.",
+    input: SearchGroupsInput,
+    annotations: READ,
+    handler: async (args) => {
+      const body: Record<string, unknown> = {};
+      if (args.search_text) body.NameLike = args.search_text;
+      if (args.is_active !== undefined) body.IsActive = args.is_active;
+      return searchPage<TdGroup>("/groups/search", body, args, { sortFields: GROUP_SORT });
     },
-    async ({ group_id, response_format }) => {
-      try {
-        const members = await tdRequest<Array<Record<string, unknown>>>(`/groups/${group_id}/members`);
-        if (!members || members.length === 0) {
-          return { content: [{ type: "text" as const, text: "This group has no members." }] };
-        }
-        let text: string;
-        if (response_format === ResponseFormat.MARKDOWN) {
-          const lines = [`# Members of Group #${group_id}`, ""];
-          for (const m of members) lines.push(`- ${m.FullName ?? m.UID} (${m.UID})`);
-          text = truncateMarkdown(lines.join("\n"));
-        } else {
-          text = toJsonText(members);
-        }
-        return { content: [{ type: "text" as const, text }], structuredContent: { items: members } as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
+    isEmpty: (page, args) => !args.count_only && page.items.length === 0,
+    emptyMessage: "No groups found matching the given criteria.",
+    render: (page, args) => {
+      if (args.count_only) return renderCount(page, "group");
+      const lines = resultsHeading("Group Search Results", page, "group");
+      for (const group of page.items) {
+        lines.push(`- **${group.Name}** (#${group.ID})${group.Description ? ` — ${group.Description}` : ""}`);
       }
-    }
-  );
-
-  server.registerTool(
-    "teamdynamix_get_person_uid",
-    {
-      title: "Get TeamDynamix Person UID by Username",
-      description: `Resolves a person's username (login name) to their GUID/UID. Use this when you know the exact username and need the UID for other API calls.
-
-Args:
-  - username (string): The person's login username (not display name)
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: The person's UID string.
-
-Examples:
-  - Use when: You have a username like "jsmith" and need their UID for responsible_uid
-  - Don't use when: You have a display name — use teamdynamix_lookup_people instead
-
-Error Handling:
-  - Returns "Error: Resource not found" if the username does not exist`,
-      inputSchema: GetPersonUidInputSchema.shape,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      lines.push("", ...pagingFooter(page));
+      return lines.join("\n");
     },
-    async ({ username, response_format }) => {
-      try {
-        const uid = await tdRequest<string>(`/people/getuid/${encodeURIComponent(username)}`);
-        const text =
-          response_format === ResponseFormat.MARKDOWN
-            ? `**${username}** → UID: \`${uid}\``
-            : toJsonText({ username, uid });
-        return { content: [{ type: "text" as const, text }], structuredContent: { username, uid } };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
+  }),
 
-  server.registerTool(
-    "teamdynamix_add_group_members",
-    {
-      title: "Add Members to TeamDynamix Group",
-      description: `Adds one or more people to a TeamDynamix group.
+  defineTool({
+    name: "teamdynamix_get_group",
+    title: "Get TeamDynamix Group",
+    description: "Gets one group's details.",
+    input: GetGroupInput,
+    annotations: READ,
+    handler: (args) =>
+      tdRequest<TdGroup>(`/groups/${args.group_id}`, {
+        cacheKey: `/groups/${args.group_id}`,
+        cacheTtlMs: getConfig().cache.referenceTtlMs,
+      }),
+    render: (group) =>
+      `## ${group.Name} (#${group.ID})\n- **Description**: ${group.Description ?? "N/A"}\n- **Active**: ${group.IsActive ? "Yes" : "No"}`,
+  }),
 
-Args:
-  - group_id (number): The group ID
-  - uids (string[]): Array of person UIDs to add
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: Confirmation message.
-
-Error Handling:
-  - Returns "Error: Resource not found" if group_id is invalid`,
-      inputSchema: ManageGroupMembersInputSchema.shape,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  defineTool({
+    name: "teamdynamix_get_group_members",
+    title: "Get TeamDynamix Group Members",
+    description: "Lists the people belonging to a group.\nPage large groups with limit/offset.",
+    input: GroupMembersInput,
+    annotations: READ,
+    handler: async (args) => {
+      const path = `/groups/${args.group_id}/members`;
+      const members = await tdRequest<Array<Record<string, unknown>>>(path, {
+        cacheKey: path,
+        cacheTtlMs: getConfig().cache.recordTtlMs,
+        cacheTier: "record",
+      });
+      return paginate(members ?? [], args.limit, args.offset);
     },
-    async ({ group_id, uids, response_format }) => {
-      try {
-        const result = await tdRequest<unknown>(`/groups/${group_id}/members`, "POST", uids);
-        const text =
-          response_format === ResponseFormat.MARKDOWN
-            ? `Added ${uids.length} member(s) to group #${group_id}.`
-            : toJsonText(result ?? { added: uids.length, group_id });
-        return { content: [{ type: "text" as const, text }], structuredContent: { added: uids.length, group_id } };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
-
-  server.registerTool(
-    "teamdynamix_remove_group_members",
-    {
-      title: "Remove Members from TeamDynamix Group",
-      description: `Removes one or more people from a TeamDynamix group.
-
-Args:
-  - group_id (number): The group ID
-  - uids (string[]): Array of person UIDs to remove
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: Confirmation message.
-
-Error Handling:
-  - Returns "Error: Resource not found" if group_id is invalid`,
-      inputSchema: ManageGroupMembersInputSchema.shape,
-      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    isEmpty: (page) => page.items.length === 0,
+    emptyMessage: "This group has no members.",
+    render: (page, args) => {
+      const lines = [`# Members of Group #${args.group_id} (${page.count} of ${page.total})`, ""];
+      for (const member of page.items) lines.push(`- ${member.FullName ?? member.UID} (${member.UID})`);
+      if (page.has_more) lines.push("", `_More members available. Use offset=${page.next_offset}._`);
+      return truncate(lines.join("\n"));
     },
-    async ({ group_id, uids, response_format }) => {
-      try {
-        const result = await tdRequest<unknown>(`/groups/${group_id}/members`, "DELETE", uids);
-        const text =
-          response_format === ResponseFormat.MARKDOWN
-            ? `Removed ${uids.length} member(s) from group #${group_id}.`
-            : toJsonText(result ?? { removed: uids.length, group_id });
-        return { content: [{ type: "text" as const, text }], structuredContent: { removed: uids.length, group_id } };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
-}
+  }),
+
+  defineTool({
+    name: "teamdynamix_add_group_members",
+    title: "Add Members to TeamDynamix Group",
+    description: "Adds one or more people to a group.\nAccepts UIDs or email addresses.",
+    input: ManageMembersInput,
+    annotations: { ...CREATE, idempotentHint: true },
+    invalidates: GROUPS,
+    handler: async (args) => {
+      const uids = await resolvePersonUids(args.uids);
+      await tdRequest<unknown>(`/groups/${args.group_id}/members`, { method: "POST", data: uids });
+      return { added: args.uids.length, group_id: args.group_id };
+    },
+    render: (data) => `Added ${data.added} member(s) to group #${data.group_id}.`,
+  }),
+
+  defineTool({
+    name: "teamdynamix_remove_group_members",
+    title: "Remove Members from TeamDynamix Group",
+    description: "Removes one or more people from a group.\nAccepts UIDs or email addresses.",
+    input: ManageMembersInput,
+    annotations: { ...MUTATE, idempotentHint: true },
+    invalidates: GROUPS,
+    handler: async (args) => {
+      const uids = await resolvePersonUids(args.uids);
+      await tdRequest<unknown>(`/groups/${args.group_id}/members`, { method: "DELETE", data: uids });
+      return { removed: args.uids.length, group_id: args.group_id };
+    },
+    render: (data) => `Removed ${data.removed} member(s) from group #${data.group_id}.`,
+  }),
+];

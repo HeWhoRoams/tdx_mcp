@@ -171,13 +171,18 @@ async function getAvailablePort(): Promise<number> {
 
 async function waitForHttpServer(processHandle: ChildProcess): Promise<void> {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("HTTP server did not start in time.")), 10_000);
+    let output = "";
+    const timeout = setTimeout(
+      () => reject(new Error(`HTTP server did not start in time. stderr so far:\n${output || "(none)"}`)),
+      10_000
+    );
     processHandle.once("exit", (code) => {
       clearTimeout(timeout);
-      reject(new Error(`HTTP server exited before startup with code ${code}.`));
+      reject(new Error(`HTTP server exited before startup with code ${code}. stderr:\n${output || "(none)"}`));
     });
     processHandle.stderr?.on("data", (chunk: Buffer) => {
-      if (chunk.toString().includes("TeamDynamix MCP server running")) {
+      output += chunk.toString();
+      if (output.includes("teamdynamix mcp server ready")) {
         clearTimeout(timeout);
         resolve();
       }
@@ -195,6 +200,8 @@ async function testHttp(): Promise<void> {
       HOST: "127.0.0.1",
       PORT: String(port),
       MCP_AUTH_TOKEN: authToken,
+      // Startup is detected from the readiness log, so the level must not be inherited.
+      TDX_LOG_LEVEL: "info",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });

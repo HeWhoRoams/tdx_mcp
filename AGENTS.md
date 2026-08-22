@@ -8,61 +8,90 @@ An MCP server exposing the [TeamDynamix Web API](https://solutions.teamdynamix.c
 
 ```bash
 npm run build        # tsc → dist/
+npm test             # vitest unit suite (no network)
 npm run test:mcp     # protocol handshakes over stdio + authenticated HTTP
+npm run test:all     # unit + script type-check + protocol test
+npm run bench        # latency benchmark; accepts -- --app-id <ID>
 npm run dev          # tsx watch (no build needed)
 npm start            # stdio transport (default)
 npm run start:http   # Streamable HTTP on 127.0.0.1:3000
 npx @modelcontextprotocol/inspector node dist/index.js  # interactive testing
 ```
 
-`npm run build` and `npm run test:mcp` must pass before testing with a real MCP client. The protocol test validates discovery and read/write annotations without calling TeamDynamix; validate live API behavior with `npm run smoke-test` or the inspector.
+`npm run build`, `npm test`, and `npm run test:mcp` must pass before testing with a real MCP client. The unit suite and protocol test never call TeamDynamix; validate live API behavior with `npm run smoke-test` or the inspector.
 
 ## Project Structure
 
 ```
 src/
-├── index.ts          # Entry point: transport selection + tool registration
-├── types.ts          # Shared TS types (TdTicket, TdAsset, TdCi, etc.) + paginate()
-├── constants.ts      # CHARACTER_LIMIT, pagination defaults, getApiBaseUrl()
+├── index.ts          # Transport selection, registration, /healthz, graceful shutdown
+├── config.ts         # Single zod-validated env parse; nothing else reads process.env
+├── types.ts          # Shared TS types + paginate() + cursor codec
+├── constants.ts      # CHARACTER_LIMIT, pagination defaults, MAX_SEARCH_FETCH
+├── framework/
+│   ├── defineTool.ts # Tool contract: format policy, error mapping, truncation, invalidation, timing
+│   └── annotations.ts# READ / CREATE / MUTATE presets
 ├── schemas/
-│   └── common.ts     # Reusable Zod schemas: AppIdSchema, LimitSchema, OffsetSchema, ResponseFormatSchema
+│   └── common.ts     # AppIdSchema, PagingShape, AttributesSchema, ResponseFormatSchema
 ├── services/
-│   ├── client.ts     # TeamDynamixClient: JWT auth/refresh, tdRequest(), handleApiError(), 429/503 retry
-│   └── format.ts     # toJsonText(), truncateMarkdown(), formatDate(), nameWithId()
-└── tools/            # One file per domain — each exports a register*Tools(server) function
+│   ├── client.ts     # Auth/refresh, keep-alive, rate limiting, single-flight, retry
+│   ├── rate-limiter.ts
+│   ├── token-store.ts
+│   ├── cache.ts      # Bounded TTL-LRU, search keys, domain invalidation
+│   ├── search.ts     # searchPage(): cached search + client-side paging
+│   ├── format.ts     # truncate(), renderers, formatDate(), nameWithId()
+│   └── logger.ts     # Structured stderr logs + counters
+├── resources/        # tdx://applications, tdx://{appId}/ticket-reference
+├── prompts/          # triage_ticket, weekly_ticket_report
+└── tools/            # One file per domain, each exporting an array of tool definitions
     ├── auth.ts
     ├── tickets.ts    # search, get, create, update, feed, tasks (get/create/update)
     ├── assets.ts     # search, get, create, update, feed
-    ├── cmdb.ts       # search, get, create, update, feed, relationships (get/add/remove), link to ticket
+    ├── cmdb.ts       # search, get, create, update, feed, relationships, link to ticket
     ├── projects.ts
     ├── issues.ts
-    ├── people.ts     # lookup, search, get, get UID by username, groups (search/get/members/add/remove)
-    ├── reference.ts  # applications, ticket types/statuses/priorities/sources/forms/impacts/urgencies,
-    │                 # asset statuses, product models, vendors, locations, accounts,
-    │                 # CI types, CI relationship types, custom attributes
+    ├── people.ts     # lookup, search, get, UID by username, groups
+    ├── reference.ts  # all list_* lookup tools (cached)
     └── reports.ts    # list reports, get report data, list/run saved searches
+test/                # vitest unit suite
+archive/             # pre-2.0 implementation, kept for reference only (not compiled)
 ```
 
 ## Adding a New Tool
 
-1. Add the Zod input schema in the relevant `src/tools/*.ts` file (use `.strict()` and reuse `AppIdSchema`, `LimitSchema`, `OffsetSchema`, `ResponseFormatSchema` from `schemas/common.ts`).
-2. Call `tdRequest()` (from `services/client.ts`) — never use `axios` directly.
-3. Format output with `toJsonText()` or `truncateMarkdown()` from `services/format.ts`.
-4. Return `{ content: [{ type: "text", text: ... }] }` from the tool handler.
-5. Register the tool inside the existing `register*Tools(server)` function.
-6. No change to `index.ts` needed unless adding a new domain file.
+1. Add a `defineTool({...})` entry to the relevant `src/tools/*.ts` array.
+2. Build the input schema with `.strict()`, reusing `AppIdSchema`, `PagingShape`, `AttributesSchema`, and `ResponseFormatSchema` from `schemas/common.ts`.
+3. Keep `description` to three lines or fewer — argument docs belong in schema `.describe()`.
+4. Pick annotations from `framework/annotations.ts` (`READ`, `CREATE`, `MUTATE`).
+5. `handler` returns a plain object (wrap arrays with `items()`); `render` turns it into markdown. Never build `content`/`structuredContent` yourself — the framework owns response shape, truncation, and error mapping.
+6. For searches call `searchPage()` so caching, cursors, and the fetch cap apply.
+7. Write tools that change records should set `invalidates: { domain, appIdFrom }` so cached searches are purged.
+8. Throw `ToolInputError` for argument problems detectable before calling TeamDynamix.
+9. Add the tool to the exported array; `index.ts` needs no change unless you add a new domain file.
 
 ## Key Conventions
 
-- **`app_id` is required on most tools.** It scopes the request to a specific TDX application (e.g., a particular ticketing or assets app). Always call `teamdynamix_list_applications` first to discover valid IDs.
+- **`app_id` is optional when a default is configured.** `TEAMDYNAMIX_DEFAULT_APP_ID` supplies it; tools call `resolveAppId(args.app_id)` from `services/context.ts` rather than reading `args.app_id` directly. Without an explicit value or a default, the tool throws a `ToolInputError` pointing at `teamdynamix_list_applications`.
+- **`/applications` is shaped differently from other reference data**: it returns `AppID`/`Type`/`Active`, not `ID`/`IsActive`. Use the `TdApp` type; do not route it through `renderNamedList`.
+- **Person arguments accept emails.** Use `resolvePersonUid` / `resolvePersonUids` from `services/context.ts` for any UID argument so agents can pass the identifiers humans actually use.
 - **Assets vs CIs**: Assets live at `/{appId}/assets/...`; Configuration Items live at `/{appId}/cmdb/...`. These are separate TDX namespaces with separate type/relationship systems. Use `teamdynamix_search_assets` for the Assets namespace and `teamdynamix_search_cis` for CMDB.
 - **Reference data before create/update.** Valid `type_id`, `status_id`, `priority_id` values vary per org and per application. Use `teamdynamix_list_ticket_types`, `teamdynamix_list_ticket_statuses`, etc. before creating records.
 - **`*_search` returns partial records; `*_get_*` returns full records.** TD's own API omits descriptions and custom attributes from search results. Use the get tool for full details.
 - **Custom attributes**: Pass `custom_attributes: [{ ID: number, Value: string }]` to create/update tools for tickets, assets, and CIs. Call `teamdynamix_list_custom_attributes` (component_id=9 for tickets, 63 for assets/CIs) to discover attribute IDs and valid choice values.
-- **`response_format`**: `markdown` (default, human-readable) or `json` (full raw API payload). Agents requesting structured data should pass `response_format: "json"`.
-- **Pagination**: all list/search tools accept `limit` (max 100, default 25) and `offset`. Responses include `has_more` and `next_offset`.
+- **Record links**: the API's `Uri` field is a relative API path, not a browser URL. Use `ticketUrl()` from `services/format.ts`, which builds a TDNext link from the configured base.
+- **`response_format`**: `markdown` (default) returns one rendered text block; `json` returns `structuredContent` plus a one-line pointer. The payload is never serialized twice, and no `outputSchema` is declared — doing so would force `structuredContent` onto markdown responses too.
+- **Pagination**: all list/search tools accept `limit` (max 100, default 25), `offset`, and an opaque `cursor` signed against the search + sort it came from. Responses include `has_more`, `next_offset`, `next_cursor`, and `total_is_lower_bound` when the 251-row window was filled — renderers must show such totals as `N+`, never as an exact count.
+- **Search extras**: `count_only` skips rendering and returns just the total; `sort_by`/`sort_order` sort within the retrieved window (TeamDynamix offers no server-side sort) and force a full 251-row fetch so the ranking is not just the first page; `verbosity="compact"` gives one line per record on ticket/asset/CI searches.
+- **De-duplication is opt-in for writes**: `tdRequest` coalesces identical concurrent GETs by default. `searchPage` passes `dedupe: true` because TD searches are POSTs. Never set `dedupe` on a create/update/comment — coalescing them would perform one write for two callers.
+- **Child collections** (feeds, tasks, relationships, group members) take `limit`/`offset` and are sliced with `paginate()` after a record-tier cached fetch.
 - **Responses are capped at 25,000 characters** and truncated with a message instructing the agent to narrow the query or paginate.
-- **Rate limits**: TD commonly enforces 30–60 calls/60 s per IP. The client auto-retries 429 and 503 responses with 2 s / 4 s backoff before surfacing the error.
+- **Caching tiers** (`services/cache.ts`): `reference` (TEAMDYNAMIX_CACHE_TTL_MS, stale-while-revalidate, never purged by writes), `search` (TEAMDYNAMIX_SEARCH_CACHE_TTL_MS), and `record` (TEAMDYNAMIX_RECORD_CACHE_TTL_MS). Pass `cacheTier` to `tdRequest`; `invalidates` purges the search and record tiers for a domain prefix.
+- **Error hints**: write tools may define `errorHints` to append valid IDs to a 400. These read cache only — never add a network call to the failure path.
+- **Search window**: TeamDynamix search has no offset parameter, so paging is client-side and fetches are capped at `MAX_SEARCH_FETCH` (251). Past that, steer agents to saved searches or reports.
+- **Rate limits**: a sliding-window limiter (`TEAMDYNAMIX_RATE_LIMIT`/`TEAMDYNAMIX_RATE_WINDOW_MS`, default 30/60 s) queues outgoing calls to stay under TD's per-IP quota. That quota is shared across processes, so a 429 gets its own retry budget (`TEAMDYNAMIX_MAX_RATE_LIMIT_WAITS`) and honors `Retry-After` up to `TEAMDYNAMIX_MAX_RETRY_DELAY_MS`; 503s use `TEAMDYNAMIX_MAX_RETRIES`.
+- **Entry point**: `src/server.ts` builds the `McpServer`; `src/index.ts` only selects a transport and starts it. Import `createServer` from `server.js` (importing `index.js` starts the server). Tool arrays are aggregated in `src/tools/index.ts`.
+- **Config**: every environment variable is parsed and validated once in `src/config.ts`. Do not read `process.env` anywhere else.
+- **Logging**: use `logger` from `services/logger.ts`. stdout is reserved for the stdio transport, so never `console.log` in server code.
 - **Reports**: `teamdynamix_get_report` (with `with_data=true`) and `teamdynamix_run_saved_search` are the most powerful read operations for complex queries — prefer these over chaining many search calls.
 
 ## Authentication

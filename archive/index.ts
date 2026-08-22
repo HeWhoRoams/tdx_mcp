@@ -1,0 +1,281 @@
+#!/usr/bin/env node
+import "dotenv/config";
+
+/**
+ * MCP Server for the TeamDynamix Web API.
+ *
+ * Provides tools to search, read, create, and update TeamDynamix tickets,
+ * assets/configuration items, projects, issues, and people/groups, plus
+ * reference-data lookups (statuses, priorities, types, applications, accounts).
+ *
+ * Authentication: set TEAMDYNAMIX_BASE_URL plus either
+ *   - TEAMDYNAMIX_USERNAME + TEAMDYNAMIX_PASSWORD (standard user login), or
+ *   - TEAMDYNAMIX_BEID + TEAMDYNAMIX_WS_KEY (admin service account login)
+ *
+ * Transport: stdio by default; set TRANSPORT=http to run as a Streamable HTTP server.
+ */
+
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { timingSafeEqual } from "node:crypto";
+import rateLimit from "express-rate-limit";
+import cors from "cors";
+
+import { registerAuthTools } from "./tools/auth.js";
+import { registerTicketTools } from "./tools/tickets.js";
+import { registerAssetTools } from "./tools/assets.js";
+import { registerCmdbTools } from "./tools/cmdb.js";
+import { registerProjectTools } from "./tools/projects.js";
+import { registerIssueTools } from "./tools/issues.js";
+import { registerPeopleTools } from "./tools/people.js";
+import { registerReferenceTools } from "./tools/reference.js";
+import { registerReportTools } from "./tools/reports.js";
+
+function createServer(): McpServer {
+  const readOnly = process.env.TEAMDYNAMIX_READ_ONLY === "true";
+  const server = new McpServer(
+    {
+      name: "teamdynamix-mcp-server",
+      version: "1.0.0",
+    },
+    {
+      instructions: readOnly
+        ? "This TeamDynamix MCP server is configured read-only. Use the available search, get, list, lookup, and report tools to retrieve data. Write tools are not registered."
+        :
+          "Use read-only teamdynamix_search_*, teamdynamix_get_*, teamdynamix_list_*, and teamdynamix_lookup_* tools to retrieve TeamDynamix data. " +
+          "Use teamdynamix_create_*, teamdynamix_update_*, teamdynamix_add_*, teamdynamix_remove_*, and teamdynamix_link_* tools to change TeamDynamix. " +
+          "Write tools are explicitly annotated as non-read-only; clients should obtain user approval according to their policy before invoking them. " +
+          "Discover application and reference-data IDs with list tools before creating or updating records.",
+    }
+  );
+
+  // Filter at registration time so write tools cannot be invoked in read-only mode.
+  const registrationServer = readOnly
+    ? new Proxy(server, {
+        get(target, property, receiver) {
+          if (property !== "registerTool") return Reflect.get(target, property, receiver);
+          return ((...args: unknown[]) => {
+            const toolConfig = args[1] as { annotations?: { readOnlyHint?: boolean } };
+            if (toolConfig.annotations?.readOnlyHint !== true) return;
+            const registerTool = target.registerTool.bind(target) as (...argumentsList: unknown[]) => unknown;
+            return registerTool(...args);
+          }) as McpServer["registerTool"];
+        },
+      })
+    : server;
+
+  registerAuthTools(registrationServer);
+  registerTicketTools(registrationServer);
+  registerAssetTools(registrationServer);
+  registerCmdbTools(registrationServer);
+  registerProjectTools(registrationServer);
+  registerIssueTools(registrationServer);
+  registerPeopleTools(registrationServer);
+  registerReferenceTools(registrationServer);
+  registerReportTools(registrationServer);
+
+  return server;
+}
+
+function validateEnv(): void {
+  if (!process.env.TEAMDYNAMIX_BASE_URL) {
+    console.error(
+      "ERROR: TEAMDYNAMIX_BASE_URL environment variable is required (e.g. https://yourorg.teamdynamix.com)."
+    );
+    process.exit(1);
+  }
+  const hasUserAuth = process.env.TEAMDYNAMIX_USERNAME && process.env.TEAMDYNAMIX_PASSWORD;
+  const hasAdminAuth = process.env.TEAMDYNAMIX_BEID && process.env.TEAMDYNAMIX_WS_KEY;
+  if (!hasUserAuth && !hasAdminAuth) {
+    console.error(
+      "ERROR: TeamDynamix credentials are required. Set either TEAMDYNAMIX_USERNAME + TEAMDYNAMIX_PASSWORD, " +
+        "or TEAMDYNAMIX_BEID + TEAMDYNAMIX_WS_KEY."
+    );
+    process.exit(1);
+  }
+}
+
+async function runStdio(): Promise<void> {
+  validateEnv();
+  const server = createServer();
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error("TeamDynamix MCP server running via stdio");
+}
+
+async function runHTTP(): Promise<void> {
+  validateEnv();
+  const host = process.env.HOST || "127.0.0.1";
+  const allowedHosts = process.env.MCP_ALLOWED_HOSTS?.split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const allowedOrigins = process.env.MCP_ALLOWED_ORIGINS?.split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const authToken = process.env.MCP_AUTH_TOKEN;
+  const isLoopback = host === "127.0.0.1" || host === "localhost" || host === "::1";
+
+  if (!isLoopback && !authToken) {
+    throw new Error(
+      "MCP_AUTH_TOKEN is required when HOST is not a loopback address. Set a strong bearer token before exposing write-capable tools remotely."
+    );
+  }
+
+  const app = createMcpExpressApp({ host, ...(allowedHosts?.length ? { allowedHosts } : {}) });
+
+  const isOriginAllowed = (origin: string): boolean => {
+    if (allowedOrigins?.includes(origin)) return true;
+    if (!isLoopback) return false;
+    try {
+      const originHost = new URL(origin).hostname;
+      return originHost === "127.0.0.1" || originHost === "localhost" || originHost === "::1";
+    } catch {
+      return false;
+    }
+  };
+
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && !isOriginAllowed(origin)) {
+      res.status(403).json({
+        jsonrpc: "2.0",
+        error: { code: -32002, message: "Forbidden origin" },
+        id: null,
+      });
+      return;
+    }
+    next();
+  });
+
+  // CORS is needed only for browser-based clients; server-to-server clients omit Origin.
+  app.use(
+    cors({
+      origin: (origin, callback) => callback(null, !origin || isOriginAllowed(origin)),
+      allowedHeaders: [
+        "Accept",
+        "Authorization",
+        "Content-Type",
+        "Last-Event-ID",
+        "MCP-Protocol-Version",
+        "Mcp-Session-Id",
+      ],
+      exposedHeaders: ["Mcp-Session-Id"],
+      methods: ["POST"],
+    })
+  );
+
+  // Rate limit only for remote deployments (loopback is trusted locally)
+  if (!isLoopback) {
+    app.use(
+      "/mcp",
+      rateLimit({
+        windowMs: 60_000,
+        max: 60,
+        standardHeaders: true,
+        legacyHeaders: false,
+        message: {
+          jsonrpc: "2.0",
+          error: { code: -32000, message: "Rate limit exceeded. Please slow down." },
+          id: null,
+        },
+      })
+    );
+  }
+
+  if (authToken) {
+    const expectedAuth = `Bearer ${authToken}`;
+    const expectedBuf = Buffer.from(expectedAuth);
+    app.use("/mcp", (req, res, next) => {
+      const received = req.headers.authorization ?? "";
+      const receivedBuf = Buffer.from(received);
+      const isValid =
+        receivedBuf.length === expectedBuf.length &&
+        timingSafeEqual(receivedBuf, expectedBuf);
+      if (!isValid) {
+        res.status(401).set("WWW-Authenticate", "Bearer").json({
+          jsonrpc: "2.0",
+          error: { code: -32001, message: "Unauthorized" },
+          id: null,
+        });
+        return;
+      }
+      next();
+    });
+  }
+
+  // Health check endpoint for load balancers and orchestrators.
+  app.get("/health", (_req, res) => {
+    res.json({ status: "ok" });
+  });
+
+  // MCP Streamable HTTP spec requires GET for SSE server-to-client streams.
+  // This server uses stateless JSON responses (no persistent sessions), so SSE
+  // is not supported — return 405 with a clear explanation so clients fail fast.
+  app.get("/mcp", (_req, res) => {
+    res.status(405).set("Allow", "POST").json({
+      jsonrpc: "2.0",
+      error: {
+        code: -32000,
+        message:
+          "This server uses stateless JSON responses (enableJsonResponse=true). SSE streams are not supported. Send requests via POST /mcp.",
+      },
+      id: null,
+    });
+  });
+
+  app.post("/mcp", async (req, res) => {
+    // Stateless: a fresh server + transport per request avoids cross-request state
+    // and request ID collisions when multiple clients connect concurrently.
+    const server = createServer();
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
+    });
+    res.on("close", () => {
+      transport.close();
+      server.close();
+    });
+    try {
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+    } catch (error) {
+      console.error("Error handling MCP request:", error);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: "2.0",
+          error: { code: -32603, message: "Internal server error" },
+          id: null,
+        });
+      }
+    }
+  });
+
+  // Stateless transport has no session to tear down, so DELETE is not supported.
+  app.delete("/mcp", (_req, res) => {
+    res.status(405).set("Allow", "POST").json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Method not allowed: this server is stateless." },
+      id: null,
+    });
+  });
+
+  const port = parseInt(process.env.PORT || "3000", 10);
+  app.listen(port, host, () => {
+    console.error(`TeamDynamix MCP server running on http://${host}:${port}/mcp`);
+  });
+}
+
+const transportMode = process.env.TRANSPORT || "stdio";
+if (transportMode === "http") {
+  runHTTP().catch((error) => {
+    console.error("Server error:", error);
+    process.exit(1);
+  });
+} else {
+  runStdio().catch((error) => {
+    console.error("Server error:", error);
+    process.exit(1);
+  });
+}

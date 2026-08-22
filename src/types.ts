@@ -10,20 +10,70 @@ export interface PaginatedResult<T> {
   items: T[];
   has_more: boolean;
   next_offset?: number;
+  next_cursor?: string;
+  /** True when `total` is a floor: TeamDynamix returned a full window, so more may exist. */
+  total_is_lower_bound?: boolean;
 }
 
-export function paginate<T>(all: T[], limit: number, offset: number): PaginatedResult<T> {
+/**
+ * Opaque cursor bound to the search it came from. The signature prevents a
+ * cursor being replayed against a different query or sort, which would silently
+ * return rows from the wrong result set.
+ */
+export function encodeCursor(offset: number, signature: string): string {
+  return Buffer.from(JSON.stringify({ o: offset, k: signature }), "utf8").toString("base64url");
+}
+
+export interface DecodedCursor {
+  offset: number;
+  signature: string;
+}
+
+export function decodeCursor(cursor: string): DecodedCursor | undefined {
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as { o?: unknown; k?: unknown };
+    if (typeof parsed.o !== "number" || !Number.isInteger(parsed.o) || parsed.o < 0) return undefined;
+    if (typeof parsed.k !== "string" || parsed.k.length === 0) return undefined;
+    return { offset: parsed.o, signature: parsed.k };
+  } catch {
+    return undefined;
+  }
+}
+
+export interface PaginateOptions {
+  signature?: string;
+  totalIsLowerBound?: boolean;
+}
+
+export function paginate<T>(all: T[], limit: number, offset: number, options: PaginateOptions = {}): PaginatedResult<T> {
   const total = all.length;
   const page = all.slice(offset, offset + limit);
   const has_more = total > offset + page.length;
+  const next_offset = offset + page.length;
   return {
     total,
     count: page.length,
     offset,
     items: page,
     has_more,
-    ...(has_more ? { next_offset: offset + page.length } : {}),
+    ...(options.totalIsLowerBound ? { total_is_lower_bound: true } : {}),
+    ...(has_more
+      ? {
+          next_offset,
+          ...(options.signature ? { next_cursor: encodeCursor(next_offset, options.signature) } : {}),
+        }
+      : {}),
   };
+}
+
+/** TeamDynamix returns applications keyed by AppID, not ID, unlike other reference data. */
+export interface TdApp {
+  AppID: number;
+  Name: string;
+  Type: string;
+  Active?: boolean;
+  Description?: string;
+  [key: string]: unknown;
 }
 
 // Minimal shapes for TeamDynamix entities. TeamDynamix returns many more fields;
@@ -94,6 +144,7 @@ export interface TdPerson {
   FirstName?: string;
   LastName?: string;
   PrimaryEmail?: string;
+  AlertEmail?: string;
   IsActive?: boolean;
   TypeID?: number;
   [key: string]: unknown;

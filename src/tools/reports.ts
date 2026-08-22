@@ -1,238 +1,147 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { tdRequest, handleApiError } from "../services/client.js";
-import { toJsonText, truncateMarkdown } from "../services/format.js";
-import { AppIdSchema, LimitSchema, OffsetSchema, ResponseFormatSchema } from "../schemas/common.js";
-import { ResponseFormat, paginate } from "../types.js";
+import { getConfig } from "../config.js";
+import { READ } from "../framework/annotations.js";
+import { defineTool, items, type AnyToolDefinition } from "../framework/defineTool.js";
+import { AppIdSchema, PagingShape, ResponseFormatSchema } from "../schemas/common.js";
+import { tdRequest } from "../services/client.js";
+import { resolveAppId } from "../services/context.js";
+import { truncate } from "../services/format.js";
+import { pagingFooter, renderCount, resultsHeading, searchPage } from "../services/search.js";
 
-// ── Schemas ───────────────────────────────────────────────────────────────────
+const DomainSchema = z
+  .enum(["tickets", "assets", "cmdb"])
+  .describe("Which domain the saved search belongs to: tickets, assets, or cmdb (configuration items).");
 
-const ListReportsInputSchema = z
-  .object({
-    response_format: ResponseFormatSchema,
-  })
-  .strict();
+const ListReportsInput = z.object({ response_format: ResponseFormatSchema }).strict();
 
-const GetReportInputSchema = z
+const GetReportInput = z
   .object({
     report_id: z.number().int().positive().describe("The Report Builder report ID."),
-    with_data: z.boolean().default(true).describe("If true (default), returns both the report definition and its data rows."),
+    with_data: z.boolean().default(true).describe("Include data rows; set false for metadata only."),
     response_format: ResponseFormatSchema,
   })
   .strict();
 
-const ListSavedSearchesInputSchema = z
-  .object({
-    app_id: AppIdSchema,
-    domain: z.enum(["tickets", "assets", "cmdb"]).describe("Which domain's saved searches to list: 'tickets', 'assets', or 'cmdb' (configuration items)."),
-    response_format: ResponseFormatSchema,
-  })
+const ListSavedSearchesInput = z
+  .object({ app_id: AppIdSchema, domain: DomainSchema, response_format: ResponseFormatSchema })
   .strict();
 
-const RunSavedSearchInputSchema = z
+const RunSavedSearchInput = z
   .object({
     app_id: AppIdSchema,
-    domain: z.enum(["tickets", "assets", "cmdb"]).describe("Which domain the saved search belongs to: 'tickets', 'assets', or 'cmdb'."),
+    domain: DomainSchema,
     search_id: z.number().int().positive().describe("The saved search ID (from teamdynamix_list_saved_searches)."),
-    limit: LimitSchema,
-    offset: OffsetSchema,
-    response_format: ResponseFormatSchema,
+    ...PagingShape,
   })
   .strict();
 
-// ── Tool Registration ─────────────────────────────────────────────────────────
+const MAX_PREVIEW_ROWS = 50;
 
-export function registerReportTools(server: McpServer): void {
-  server.registerTool(
-    "teamdynamix_list_reports",
-    {
-      title: "List TeamDynamix Reports",
-      description: `Lists all Report Builder reports visible to the current user. Reports are pre-built queries that can return complex cross-entity data. Use teamdynamix_get_report to execute one and retrieve its data.
-
-Args:
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: List of reports with their IDs, names, and descriptions.`,
-      inputSchema: ListReportsInputSchema.shape,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    },
-    async ({ response_format }) => {
-      try {
-        const reports = await tdRequest<Array<Record<string, unknown>>>(`/reports`);
-        if (!reports || reports.length === 0) {
-          return { content: [{ type: "text" as const, text: "No reports found." }] };
-        }
-        let text: string;
-        if (response_format === ResponseFormat.MARKDOWN) {
-          const lines = [`# Available Reports (${reports.length})`, ""];
-          for (const r of reports) {
-            lines.push(`- **${r.Name}** (ID: ${r.ID})${r.Description ? ` — ${r.Description}` : ""}`);
-          }
-          text = truncateMarkdown(lines.join("\n"));
-        } else {
-          text = toJsonText(reports);
-        }
-        return { content: [{ type: "text" as const, text }], structuredContent: { items: reports } as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
+export const reportTools: AnyToolDefinition[] = [
+  defineTool({
+    name: "teamdynamix_list_reports",
+    title: "List TeamDynamix Reports",
+    description:
+      "Lists Report Builder reports visible to the authenticated account.\nPair with teamdynamix_get_report to execute one.",
+    input: ListReportsInput,
+    annotations: READ,
+    handler: async () =>
+      items(
+        await tdRequest<Array<Record<string, unknown>>>("/reports", {
+          cacheKey: "/reports",
+          cacheTtlMs: getConfig().cache.referenceTtlMs,
+        })
+      ),
+    isEmpty: (data) => data.items.length === 0,
+    emptyMessage: "No reports found.",
+    render: (data) => {
+      const lines = [`# Available Reports (${data.items.length})`, ""];
+      for (const report of data.items) {
+        lines.push(`- **${report.Name}** (ID: ${report.ID})${report.Description ? ` — ${report.Description}` : ""}`);
       }
-    }
-  );
-
-  server.registerTool(
-    "teamdynamix_get_report",
-    {
-      title: "Get TeamDynamix Report Data",
-      description: `Executes a Report Builder report and returns its data rows. This is the most powerful way to query TeamDynamix for complex or cross-entity data that the individual search tools can't express.
-
-Use teamdynamix_list_reports first to discover report IDs.
-
-Args:
-  - report_id (number): The report ID
-  - with_data (boolean, default true): Whether to include data rows. Set false to only get report metadata.
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: Report definition and (if with_data=true) all result rows.
-
-Error Handling:
-  - Returns "Error: Resource not found" if report_id is invalid
-  - Returns "Error: Permission denied" if the account lacks access to this report`,
-      inputSchema: GetReportInputSchema.shape,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      return truncate(lines.join("\n"));
     },
-    async ({ report_id, with_data, response_format }) => {
-      try {
-        const report = await tdRequest<Record<string, unknown>>(`/reports/${report_id}`, "GET", undefined, {
-          withData: with_data,
-        });
-        let text: string;
-        if (response_format === ResponseFormat.MARKDOWN) {
-          const lines = [`# Report: ${report.Name ?? report_id}`, ""];
-          if (report.Description) lines.push(String(report.Description), "");
-          const rows = report.DataRows as Array<Record<string, unknown>> | undefined;
-          if (rows && rows.length > 0) {
-            lines.push(`**${rows.length} row(s) returned.**`, "");
-            // Render as a simple key-value list for the first few rows to stay readable
-            const preview = rows.slice(0, 50);
-            for (const row of preview) {
-              lines.push(
-                Object.entries(row)
-                  .map(([k, v]) => `${k}: ${v}`)
-                  .join(" | ")
-              );
-            }
-            if (rows.length > 50) lines.push(`\n_...and ${rows.length - 50} more rows. Use response_format='json' for full data._`);
-          } else if (with_data) {
-            lines.push("_No data rows returned._");
-          }
-          text = truncateMarkdown(lines.join("\n"));
-        } else {
-          text = toJsonText(report);
+  }),
+
+  defineTool({
+    name: "teamdynamix_get_report",
+    title: "Get TeamDynamix Report Data",
+    description:
+      "Runs a Report Builder report and returns its rows — the most capable way to answer complex or cross-entity questions.\n" +
+      "Prefer this over chaining many searches. Discover report_id with teamdynamix_list_reports.",
+    input: GetReportInput,
+    annotations: READ,
+    handler: (args) =>
+      tdRequest<Record<string, unknown>>(`/reports/${args.report_id}`, { params: { withData: args.with_data } }),
+    render: (report, args) => {
+      const lines = [`# Report: ${report.Name ?? args.report_id}`, ""];
+      if (report.Description) lines.push(String(report.Description), "");
+      const rows = report.DataRows as Array<Record<string, unknown>> | undefined;
+      if (rows && rows.length > 0) {
+        lines.push(`**${rows.length} row(s) returned.**`, "");
+        for (const row of rows.slice(0, MAX_PREVIEW_ROWS)) {
+          lines.push(
+            Object.entries(row)
+              .map(([key, value]) => `${key}: ${value}`)
+              .join(" | ")
+          );
         }
-        return { content: [{ type: "text" as const, text }], structuredContent: report };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
+        if (rows.length > MAX_PREVIEW_ROWS) {
+          lines.push(`\n_...and ${rows.length - MAX_PREVIEW_ROWS} more rows. Use response_format='json' for full data._`);
+        }
+      } else if (args.with_data) {
+        lines.push("_No data rows returned._");
       }
-    }
-  );
-
-  server.registerTool(
-    "teamdynamix_list_saved_searches",
-    {
-      title: "List TeamDynamix Saved Searches",
-      description: `Lists saved searches visible to the current user for a given domain (tickets, assets, or CIs). Saved searches are pre-configured filters that technicians have saved in TDX. Use teamdynamix_run_saved_search to execute one.
-
-Args:
-  - app_id (number): The application ID
-  - domain ('tickets' | 'assets' | 'cmdb'): Which domain's saved searches to list
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: List of saved searches with ID and Name.
-
-Error Handling:
-  - Returns "Error: Resource not found" if app_id is invalid`,
-      inputSchema: ListSavedSearchesInputSchema.shape,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      return lines.join("\n");
     },
-    async ({ app_id, domain, response_format }) => {
-      try {
-        const domainPath = domain === "cmdb" ? "cmdb" : domain === "assets" ? "assets" : "tickets";
-        const searches = await tdRequest<Array<Record<string, unknown>>>(`/${app_id}/${domainPath}/searches`);
-        if (!searches || searches.length === 0) {
-          return { content: [{ type: "text" as const, text: `No saved searches found for ${domain} in app ${app_id}.` }] };
-        }
-        let text: string;
-        if (response_format === ResponseFormat.MARKDOWN) {
-          const lines = [`# Saved ${domain} Searches (${searches.length})`, ""];
-          for (const s of searches) {
-            lines.push(`- **${s.Name}** (ID: ${s.ID})`);
-          }
-          text = truncateMarkdown(lines.join("\n"));
-        } else {
-          text = toJsonText(searches);
-        }
-        return { content: [{ type: "text" as const, text }], structuredContent: { items: searches } as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
+  }),
 
-  server.registerTool(
-    "teamdynamix_run_saved_search",
-    {
-      title: "Run TeamDynamix Saved Search",
-      description: `Executes a saved search and returns paginated results. Use teamdynamix_list_saved_searches to discover search IDs.
-
-Args:
-  - app_id (number): The application ID
-  - domain ('tickets' | 'assets' | 'cmdb'): Which domain the saved search belongs to
-  - search_id (number): The saved search ID
-  - limit (default 25), offset (default 0)
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: Paginated results matching the saved search criteria.
-
-Error Handling:
-  - Returns "Error: Resource not found" if search_id or app_id is invalid`,
-      inputSchema: RunSavedSearchInputSchema.shape,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  defineTool({
+    name: "teamdynamix_list_saved_searches",
+    title: "List TeamDynamix Saved Searches",
+    description:
+      "Lists saved searches for a domain (tickets, assets, or cmdb) in an application.\nExecute one with teamdynamix_run_saved_search.",
+    input: ListSavedSearchesInput,
+    annotations: READ,
+    handler: async (args) => {
+      const path = `/${resolveAppId(args.app_id)}/${args.domain}/searches`;
+      return items(
+        await tdRequest<Array<Record<string, unknown>>>(path, {
+          cacheKey: path,
+          cacheTtlMs: getConfig().cache.referenceTtlMs,
+        })
+      );
     },
-    async (params) => {
-      try {
-        const domainPath = params.domain === "cmdb" ? "cmdb" : params.domain === "assets" ? "assets" : "tickets";
-        const fetchCount = Math.min(params.offset + params.limit + 1, 1001);
-        const body = { MaxResults: fetchCount };
-        const result = await tdRequest<Record<string, unknown>>(
-          `/${params.app_id}/${domainPath}/searches/${params.search_id}/results`,
-          "POST",
-          body
-        );
-        // The results endpoint returns { ResultCount, Results[] } or similar
-        const items = (result.Results ?? result.Items ?? result) as Array<Record<string, unknown>>;
-        const arr = Array.isArray(items) ? items : [];
-        const page = paginate(arr, params.limit, params.offset);
+    isEmpty: (data) => data.items.length === 0,
+    emptyMessage: "No saved searches found for that domain and application.",
+    render: (data, args) => {
+      const lines = [`# Saved ${args.domain} Searches (${data.items.length})`, ""];
+      for (const search of data.items) lines.push(`- **${search.Name}** (ID: ${search.ID})`);
+      return truncate(lines.join("\n"));
+    },
+  }),
 
-        if (page.items.length === 0) {
-          return { content: [{ type: "text" as const, text: "No results found for this saved search." }] };
-        }
-        let text: string;
-        if (params.response_format === ResponseFormat.MARKDOWN) {
-          const lines = [`# Saved Search Results`, "", `Showing ${page.items.length} fetched result(s)`, ""];
-          for (const item of page.items) {
-            const id = item.ID ?? item.Id ?? "?";
-            const name = item.Title ?? item.Name ?? "(no name)";
-            lines.push(`- **${name}** (#${id})`);
-          }
-          if (page.has_more) lines.push("", `_More results available. Use offset=${page.next_offset} to continue._`);
-          text = truncateMarkdown(lines.join("\n"));
-        } else {
-          text = toJsonText(page);
-        }
-        return { content: [{ type: "text" as const, text }], structuredContent: page as unknown as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
+  defineTool({
+    name: "teamdynamix_run_saved_search",
+    title: "Run TeamDynamix Saved Search",
+    description:
+      "Executes a saved search and returns paginated results.\n" +
+      "Strong choice for large or complex result sets that the individual search tools cannot express.",
+    input: RunSavedSearchInput,
+    annotations: READ,
+    handler: (args) =>
+      searchPage(`/${resolveAppId(args.app_id)}/${args.domain}/searches/${args.search_id}/results`, {}, args),
+    isEmpty: (page, args) => !args.count_only && page.items.length === 0,
+    emptyMessage: "No results found for this saved search.",
+    render: (page, args) => {
+      if (args.count_only) return renderCount(page, "result");
+      const lines = resultsHeading("Saved Search Results", page, "result");
+      for (const item of page.items) {
+        const record = item as Record<string, unknown>;
+        lines.push(`- **${record.Title ?? record.Name ?? "(no name)"}** (#${record.ID ?? record.Id ?? "?"})`);
       }
-    }
-  );
-}
+      lines.push("", ...pagingFooter(page));
+      return lines.join("\n");
+    },
+  }),
+];

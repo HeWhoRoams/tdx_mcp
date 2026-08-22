@@ -24,5 +24,7 @@ jobs:
       - run: npm ci
 
       - run: npm run build
+      - run: npm test
       - run: npm run check:scripts
+      - run: npm run test:url
       - run: npm run test:mcp

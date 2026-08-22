@@ -5,16 +5,14 @@ export const CHARACTER_LIMIT = 25000;
 export const DEFAULT_LIMIT = 25;
 export const MAX_LIMIT = 100;
 
-// TEAMDYNAMIX_BASE_URL may be an organization root, Web API root, or API root.
-export function getApiBaseUrl(): string {
-  const raw = process.env.TEAMDYNAMIX_BASE_URL;
-  if (!raw) {
-    throw new Error(
-      "TEAMDYNAMIX_BASE_URL environment variable is required (e.g. https://yourorg.teamdynamix.com or https://yourorg.teamdynamixpreview.com for sandbox)."
-    );
-  }
-  const trimmed = raw.replace(/\/+$/, "");
-  if (trimmed.endsWith("/api")) return trimmed;
-  if (/(?:^|\/)\w*WebApi$/.test(trimmed)) return `${trimmed}/api`;
-  return `${trimmed}/TDWebApi/api`;
-}
+// TeamDynamix search endpoints have no offset parameter: they return the first
+// N matches and we page client-side. Capping N keeps deep paging from forcing
+// TD to serialize hundreds of full records to render a single page.
+export const MAX_SEARCH_FETCH = 251;
+
+// Once an agent pages, widen the window so later pages come from cache. Sized
+// from measurement: search costs ~440 ms fixed plus ~1 ms per row, so ~100 rows
+// is roughly one page's latency and covers several pages.
+export const PAGING_WINDOW = 101;
+
+export { getApiBaseUrl, resolveApiBaseUrl } from "./config.js";

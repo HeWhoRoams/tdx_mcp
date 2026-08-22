@@ -1,241 +1,159 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { tdRequest, handleApiError } from "../services/client.js";
-import { toJsonText, truncateMarkdown, nameWithId } from "../services/format.js";
-import { AppIdSchema, LimitSchema, OffsetSchema, ResponseFormatSchema } from "../schemas/common.js";
-import { ResponseFormat, TdIssue, paginate } from "../types.js";
+import { getConfig } from "../config.js";
+import { CREATE, MUTATE, READ } from "../framework/annotations.js";
+import { defineTool, ToolInputError, type AnyToolDefinition } from "../framework/defineTool.js";
+import { AppIdSchema, PagingShape, PersonRefSchema, ResponseFormatSchema, sortBySchema } from "../schemas/common.js";
+import { tdRequest } from "../services/client.js";
+import { resolveAppId, resolvePersonUid } from "../services/context.js";
+import { nameWithId } from "../services/format.js";
+import { pagingFooter, renderCount, resultsHeading, searchPage } from "../services/search.js";
+import type { TdIssue } from "../types.js";
 
-const SearchIssuesInputSchema = z
+const ProjectIdSchema = z.number().int().positive().describe("The project ID the issue belongs to.");
+const IssueIdSchema = z.number().int().positive().describe("The issue ID.");
+
+const SORT_FIELDS = { title: "Title", status: "StatusID", id: "ID" };
+
+const SearchInput = z
   .object({
     app_id: AppIdSchema,
     project_ids: z.array(z.number().int()).optional().describe("Restrict to these project IDs."),
     search_text: z.string().max(200).optional().describe("Free-text search against issue title."),
     status_ids: z.array(z.number().int()).optional().describe("Filter by IssueStatus IDs."),
-    limit: LimitSchema,
-    offset: OffsetSchema,
-    response_format: ResponseFormatSchema,
+    sort_by: sortBySchema(["title", "status", "id"]),
+    ...PagingShape,
   })
   .strict();
 
-const GetIssueInputSchema = z
-  .object({
-    app_id: AppIdSchema,
-    project_id: z.number().int().positive().describe("The project ID the issue belongs to."),
-    issue_id: z.number().int().positive().describe("The issue ID."),
-    response_format: ResponseFormatSchema,
-  })
+const GetInput = z
+  .object({ app_id: AppIdSchema, project_id: ProjectIdSchema, issue_id: IssueIdSchema, response_format: ResponseFormatSchema })
   .strict();
 
-const CreateIssueInputSchema = z
+const CreateInput = z
   .object({
     app_id: AppIdSchema,
     project_id: z.number().int().positive().describe("The project ID to create the issue under."),
     title: z.string().min(1).max(500).describe("The issue title."),
-    description: z.string().max(50000).optional(),
-    status_id: z.number().int().positive().optional(),
+    description: z.string().max(50000).optional().describe("The issue description."),
+    status_id: z.number().int().positive().optional().describe("The IssueStatus ID."),
     priority_name: z.string().optional().describe("The issue priority name, e.g. 'High'."),
-    responsible_uid: z.string().optional().describe("Person UID responsible for the issue."),
+    responsible_uid: PersonRefSchema("The person responsible for the issue").optional(),
     response_format: ResponseFormatSchema,
   })
   .strict();
 
-const UpdateIssueInputSchema = z
+const UpdateInput = z
   .object({
     app_id: AppIdSchema,
-    project_id: z.number().int().positive().describe("The project ID the issue belongs to."),
-    issue_id: z.number().int().positive().describe("The issue ID to update."),
-    title: z.string().min(1).max(500).optional(),
-    description: z.string().max(50000).optional(),
-    status_id: z.number().int().positive().optional(),
-    responsible_uid: z.string().optional(),
+    project_id: ProjectIdSchema,
+    issue_id: IssueIdSchema,
+    title: z.string().min(1).max(500).optional().describe("New issue title."),
+    description: z.string().max(50000).optional().describe("New issue description."),
+    status_id: z.number().int().positive().optional().describe("New IssueStatus ID."),
+    responsible_uid: PersonRefSchema("The new responsible person").optional(),
     response_format: ResponseFormatSchema,
   })
   .strict();
 
-function formatIssueMarkdown(i: TdIssue): string {
+function renderIssue(issue: TdIssue): string {
   return [
-    `## ${i.Title} (#${i.ID})`,
-    `- **Project**: #${i.ProjectID}`,
-    `- **Status**: ${nameWithId(i.StatusName, i.StatusID)}`,
-    `- **Priority**: ${i.PriorityName ?? "N/A"}`,
+    `## ${issue.Title} (#${issue.ID})`,
+    `- **Project**: #${issue.ProjectID}`,
+    `- **Status**: ${nameWithId(issue.StatusName, issue.StatusID)}`,
+    `- **Priority**: ${issue.PriorityName ?? "N/A"}`,
   ].join("\n");
 }
 
-export function registerIssueTools(server: McpServer): void {
-  server.registerTool(
-    "teamdynamix_search_issues",
-    {
-      title: "Search TeamDynamix Issues",
-      description: `Search for issues (not tickets — project-level issue tracking) across TeamDynamix projects.
+const ISSUES = { domain: "projects", appIdFrom: (args: { app_id?: number }) => resolveAppId(args.app_id) };
 
-Args:
-  - app_id (number): The application ID
-  - project_ids (number[], optional): Restrict search to these projects
-  - search_text (string, optional)
-  - status_ids (number[], optional)
-  - limit (default 25), offset (default 0)
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: Paginated list of matching issues. Attributes are not included; use teamdynamix_get_issue for full details.
-
-Error Handling:
-  - Returns "No issues found matching the given criteria" if search is empty`,
-      inputSchema: SearchIssuesInputSchema.shape,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+export const issueTools: AnyToolDefinition[] = [
+  defineTool({
+    name: "teamdynamix_search_issues",
+    title: "Search TeamDynamix Issues",
+    description:
+      "Searches project issues (project-level issue tracking, not tickets) by project, text, or status.\n" +
+      "Returns partial records — use teamdynamix_get_issue for full detail.",
+    input: SearchInput,
+    annotations: READ,
+    handler: async (args) => {
+      const body: Record<string, unknown> = {};
+      if (args.project_ids) body.ProjectIDs = args.project_ids;
+      if (args.search_text) body.SearchText = args.search_text;
+      if (args.status_ids) body.StatusIDs = args.status_ids;
+      return searchPage<TdIssue>(`/${resolveAppId(args.app_id)}/projects/issues/search`, body, args, {
+        sortFields: SORT_FIELDS,
+      });
     },
-    async (params) => {
-      try {
-        const fetchCount = Math.min(params.offset + params.limit + 1, 1001);
-        const body: Record<string, unknown> = { MaxResults: fetchCount };
-        if (params.project_ids) body.ProjectIDs = params.project_ids;
-        if (params.search_text) body.SearchText = params.search_text;
-        if (params.status_ids) body.StatusIDs = params.status_ids;
-
-        const results = await tdRequest<TdIssue[]>(`/${params.app_id}/projects/issues/search`, "POST", body);
-        const page = paginate(results ?? [], params.limit, params.offset);
-        if (page.items.length === 0) {
-          return { content: [{ type: "text" as const, text: "No issues found matching the given criteria." }] };
-        }
-        let text: string;
-        if (params.response_format === ResponseFormat.MARKDOWN) {
-          const lines = [`# Issue Search Results`, "", `Found ${page.total} issue(s), showing ${page.items.length}`, ""];
-          for (const i of page.items) lines.push(formatIssueMarkdown(i), "");
-          if (page.has_more) lines.push(`_More results available. Use offset=${page.next_offset} to continue._`);
-          text = truncateMarkdown(lines.join("\n"));
-        } else {
-          text = toJsonText(page);
-        }
-        return { content: [{ type: "text" as const, text }], structuredContent: page as unknown as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
-
-  server.registerTool(
-    "teamdynamix_get_issue",
-    {
-      title: "Get TeamDynamix Issue",
-      description: `Gets full details on a single project issue.
-
-Args:
-  - app_id (number): The application ID
-  - project_id (number): The project ID
-  - issue_id (number): The issue ID
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: Full issue details.
-
-Error Handling:
-  - Returns "Error: Resource not found" if project_id or issue_id is invalid`,
-      inputSchema: GetIssueInputSchema.shape,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    isEmpty: (page, args) => !args.count_only && page.items.length === 0,
+    emptyMessage: "No issues found matching the given criteria.",
+    render: (page, args) => {
+      if (args.count_only) return renderCount(page, "issue");
+      const lines = resultsHeading("Issue Search Results", page, "issue");
+      for (const issue of page.items) lines.push(renderIssue(issue), "");
+      lines.push(...pagingFooter(page));
+      return lines.join("\n");
     },
-    async ({ app_id, project_id, issue_id, response_format }) => {
-      try {
-        const issue = await tdRequest<TdIssue>(`/${app_id}/projects/${project_id}/issues/${issue_id}`);
-        const text =
-          response_format === ResponseFormat.MARKDOWN ? truncateMarkdown(formatIssueMarkdown(issue)) : toJsonText(issue);
-        return { content: [{ type: "text" as const, text }], structuredContent: issue as unknown as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
+  }),
 
-  server.registerTool(
-    "teamdynamix_create_issue",
-    {
-      title: "Create TeamDynamix Issue",
-      description: `Creates a new issue under a project.
-
-Args:
-  - app_id (number): The application ID
-  - project_id (number): The project to create the issue under
-  - title (string): Issue title
-  - description, status_id, priority_name, responsible_uid (optional)
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: The newly created issue, including its assigned ID.
-
-Error Handling:
-  - Returns "Error: ... rejected the request as invalid (400)" if required fields are missing
-  - Returns "Error: Permission denied" if the account lacks TDProjects access`,
-      inputSchema: CreateIssueInputSchema.shape,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  defineTool({
+    name: "teamdynamix_get_issue",
+    title: "Get TeamDynamix Issue",
+    description: "Gets one project issue in full.",
+    input: GetInput,
+    annotations: READ,
+    handler: (args) => {
+      const path = `/${resolveAppId(args.app_id)}/projects/${args.project_id}/issues/${args.issue_id}`;
+      return tdRequest<TdIssue>(path, {
+        cacheKey: path,
+        cacheTtlMs: getConfig().cache.recordTtlMs,
+        cacheTier: "record",
+      });
     },
-    async (params) => {
-      try {
-        const body: Record<string, unknown> = { ProjectID: params.project_id, Title: params.title };
-        if (params.description) body.Description = params.description;
-        if (params.status_id) body.StatusID = params.status_id;
-        if (params.priority_name) body.PriorityName = params.priority_name;
-        if (params.responsible_uid) body.ResponsibleUid = params.responsible_uid;
+    render: (issue) => renderIssue(issue),
+  }),
 
-        const issue = await tdRequest<TdIssue>(`/${params.app_id}/projects/issues`, "POST", body);
-        const text =
-          params.response_format === ResponseFormat.MARKDOWN
-            ? truncateMarkdown(`# Issue Created\n\n${formatIssueMarkdown(issue)}`)
-            : toJsonText(issue);
-        return { content: [{ type: "text" as const, text }], structuredContent: issue as unknown as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
-
-  server.registerTool(
-    "teamdynamix_update_issue",
-    {
-      title: "Update TeamDynamix Issue",
-      description: `Updates an existing project issue. This is a full-field edit endpoint on the TeamDynamix side, but this tool only sends the fields you provide, merged onto the existing issue.
-
-Args:
-  - app_id (number): The application ID
-  - project_id (number): The project ID
-  - issue_id (number): The issue ID to update
-  - title, description, status_id, responsible_uid (all optional; at least one required)
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: The updated issue.
-
-Concurrency warning: This update uses a GET -> merge -> POST flow because PATCH is unavailable. Concurrent edits may be overwritten; use the API's version or ETag for optimistic concurrency when available.
-
-Error Handling:
-  - Returns "Error: Resource not found" if project_id or issue_id is invalid`,
-      inputSchema: UpdateIssueInputSchema.shape,
-      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+  defineTool({
+    name: "teamdynamix_create_issue",
+    title: "Create TeamDynamix Issue",
+    description: "Creates an issue under a project. Requires project_id and title.",
+    input: CreateInput,
+    annotations: CREATE,
+    invalidates: ISSUES,
+    handler: async (args) => {
+      const body: Record<string, unknown> = { ProjectID: args.project_id, Title: args.title };
+      if (args.description) body.Description = args.description;
+      if (args.status_id) body.StatusID = args.status_id;
+      if (args.priority_name) body.PriorityName = args.priority_name;
+      if (args.responsible_uid) body.ResponsibleUid = await resolvePersonUid(args.responsible_uid);
+      return tdRequest<TdIssue>(`/${resolveAppId(args.app_id)}/projects/issues`, { method: "POST", data: body });
     },
-    async (params) => {
-      try {
-        if (
-          params.title === undefined &&
-          params.description === undefined &&
-          params.status_id === undefined &&
-          params.responsible_uid === undefined
-        ) {
-          return {
-            isError: true,
-            content: [{ type: "text" as const, text: "Error: At least one field to update must be provided (title, description, status_id, or responsible_uid)." }],
-          };
-        }
-        const existing = await tdRequest<TdIssue>(`/${params.app_id}/projects/${params.project_id}/issues/${params.issue_id}`);
-        const merged = {
-          ...existing,
-          ...(params.title !== undefined ? { Title: params.title } : {}),
-          ...(params.description !== undefined ? { Description: params.description } : {}),
-          ...(params.status_id !== undefined ? { StatusID: params.status_id } : {}),
-          ...(params.responsible_uid !== undefined ? { ResponsibleUid: params.responsible_uid } : {}),
-        };
-        const issue = await tdRequest<TdIssue>(`/${params.app_id}/projects/${params.project_id}/issues/${params.issue_id}`, "POST", merged);
-        const text =
-          params.response_format === ResponseFormat.MARKDOWN
-            ? truncateMarkdown(`# Issue Updated\n\n${formatIssueMarkdown(issue)}`)
-            : toJsonText(issue);
-        return { content: [{ type: "text" as const, text }], structuredContent: issue as unknown as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
+    render: (issue) => `# Issue Created\n\n${renderIssue(issue)}`,
+  }),
+
+  defineTool({
+    name: "teamdynamix_update_issue",
+    title: "Update TeamDynamix Issue",
+    description:
+      "Updates a project issue, changing only the fields you supply.\n" +
+      "Uses read-modify-write because TeamDynamix has no PATCH here, so concurrent edits can overwrite each other.",
+    input: UpdateInput,
+    annotations: MUTATE,
+    invalidates: ISSUES,
+    handler: async (args) => {
+      const changes: Record<string, unknown> = {};
+      if (args.title !== undefined) changes.Title = args.title;
+      if (args.description !== undefined) changes.Description = args.description;
+      if (args.status_id !== undefined) changes.StatusID = args.status_id;
+      if (args.responsible_uid !== undefined) changes.ResponsibleUid = await resolvePersonUid(args.responsible_uid);
+      if (Object.keys(changes).length === 0) {
+        throw new ToolInputError(
+          "At least one field to update must be provided (title, description, status_id, or responsible_uid)."
+        );
       }
-    }
-  );
-}
+      const path = `/${resolveAppId(args.app_id)}/projects/${args.project_id}/issues/${args.issue_id}`;
+      const existing = await tdRequest<TdIssue>(path);
+      return tdRequest<TdIssue>(path, { method: "POST", data: { ...existing, ...changes } });
+    },
+    render: (issue) => `# Issue Updated\n\n${renderIssue(issue)}`,
+  }),
+];

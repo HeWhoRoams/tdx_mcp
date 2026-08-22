@@ -1,375 +1,268 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { tdRequest, handleApiError } from "../services/client.js";
-import { toJsonText, truncateMarkdown, nameWithId } from "../services/format.js";
-import { AppIdSchema, LimitSchema, OffsetSchema, ResponseFormatSchema } from "../schemas/common.js";
-import { ResponseFormat, TdAsset, TdFeedEntry, paginate } from "../types.js";
+import { getConfig } from "../config.js";
+import { CREATE, MUTATE, READ } from "../framework/annotations.js";
+import { defineTool, ToolInputError, type AnyToolDefinition } from "../framework/defineTool.js";
+import {
+  AppIdSchema,
+  AttributesSchema,
+  ChildPagingShape,
+  PagingShape,
+  PersonRefSchema,
+  ResponseFormatSchema,
+  VerbositySchema,
+  sortBySchema,
+} from "../schemas/common.js";
+import { tdRequest } from "../services/client.js";
+import { resolveAppId, resolvePersonUid, resolvePersonUids } from "../services/context.js";
+import { nameWithId, renderFeed } from "../services/format.js";
+import { combineHints, referenceHint } from "../services/hints.js";
+import { pagingFooter, renderCount, resultsHeading, searchPage } from "../services/search.js";
+import { paginate, type TdAsset, type TdFeedEntry } from "../types.js";
 
-const SearchAssetsInputSchema = z
+const AssetIdSchema = z.number().int().positive().describe("The asset ID.");
+
+const SORT_FIELDS = { name: "Name", status: "StatusID", id: "ID" };
+
+const SearchInput = z
   .object({
     app_id: AppIdSchema,
     search_text: z.string().max(200).optional().describe("Free-text search against asset name/tag/serial number."),
     serial_number: z.string().optional().describe("Exact serial number to search for."),
     status_ids: z.array(z.number().int()).optional().describe("Filter to these AssetStatus IDs."),
-    owning_customer_uids: z.array(z.string()).optional().describe("Filter by owning customer (person) UID."),
+    owning_customer_uids: z.array(z.string()).optional().describe("Filter by owning customer. Accepts UIDs or email addresses."),
     owning_department_ids: z.array(z.number().int()).optional().describe("Filter by owning department/account ID."),
     location_ids: z.array(z.number().int()).optional().describe("Filter by location ID."),
     product_model_ids: z.array(z.number().int()).optional().describe("Filter by product model ID."),
-    limit: LimitSchema,
-    offset: OffsetSchema,
-    response_format: ResponseFormatSchema,
+    sort_by: sortBySchema(["name", "status", "id"]),
+    verbosity: VerbositySchema,
+    ...PagingShape,
   })
   .strict();
 
-const GetAssetInputSchema = z
-  .object({
-    app_id: AppIdSchema,
-    asset_id: z.number().int().positive().describe("The asset ID."),
-    response_format: ResponseFormatSchema,
-  })
-  .strict();
+const GetInput = z.object({ app_id: AppIdSchema, asset_id: AssetIdSchema, response_format: ResponseFormatSchema }).strict();
 
-const CreateAssetInputSchema = z
+const CreateInput = z
   .object({
     app_id: AppIdSchema,
     name: z.string().min(1).max(500).describe("The asset name."),
     status_id: z.number().int().positive().describe("The AssetStatus ID (see teamdynamix_list_asset_statuses)."),
-    serial_number: z.string().optional(),
+    serial_number: z.string().optional().describe("Serial number."),
     tag: z.string().optional().describe("Asset tag."),
-    product_model_id: z.number().int().positive().optional(),
-    location_id: z.number().int().positive().optional(),
-    owning_customer_uid: z.string().optional().describe("Person UID of the owning customer."),
+    product_model_id: z.number().int().positive().optional().describe("Product model ID (see teamdynamix_list_product_models)."),
+    location_id: z.number().int().positive().optional().describe("Location ID (see teamdynamix_list_locations)."),
+    owning_customer_uid: PersonRefSchema("The owning customer").optional(),
     owning_department_id: z.number().int().positive().optional().describe("Owning department/account ID."),
-    custom_attributes: z
-      .array(z.object({ ID: z.number().int(), Value: z.string() }))
-      .optional()
-      .describe("Custom attribute values to set. Use teamdynamix_list_custom_attributes (component_id=63) to discover IDs."),
+    custom_attributes: AttributesSchema,
     response_format: ResponseFormatSchema,
   })
   .strict();
 
-const UpdateAssetInputSchema = z
+const UpdateInput = z
   .object({
     app_id: AppIdSchema,
-    asset_id: z.number().int().positive().describe("The asset ID to update."),
-    name: z.string().min(1).max(500).optional(),
-    status_id: z.number().int().positive().optional(),
-    serial_number: z.string().optional(),
-    tag: z.string().optional(),
-    location_id: z.number().int().positive().optional(),
-    owning_customer_uid: z.string().optional(),
-    owning_department_id: z.number().int().positive().optional(),
-    custom_attributes: z
-      .array(z.object({ ID: z.number().int(), Value: z.string() }))
-      .optional()
-      .describe("Custom attribute values to update. Use teamdynamix_list_custom_attributes (component_id=63) to discover IDs."),
+    asset_id: AssetIdSchema,
+    name: z.string().min(1).max(500).optional().describe("New asset name."),
+    status_id: z.number().int().positive().optional().describe("New AssetStatus ID."),
+    serial_number: z.string().optional().describe("New serial number."),
+    tag: z.string().optional().describe("New asset tag."),
+    location_id: z.number().int().positive().optional().describe("New location ID."),
+    owning_customer_uid: PersonRefSchema("The new owning customer").optional(),
+    owning_department_id: z.number().int().positive().optional().describe("New owning department/account ID."),
+    custom_attributes: AttributesSchema,
     response_format: ResponseFormatSchema,
   })
   .strict();
 
-const GetAssetFeedInputSchema = z
-  .object({
-    app_id: AppIdSchema,
-    asset_id: z.number().int().positive().describe("The asset ID."),
-    response_format: ResponseFormatSchema,
-  })
-  .strict();
+const FeedInput = z.object({ app_id: AppIdSchema, asset_id: AssetIdSchema, ...ChildPagingShape }).strict();
 
-const AddAssetCommentInputSchema = z
+const CommentInput = z
   .object({
     app_id: AppIdSchema,
-    asset_id: z.number().int().positive().describe("The asset ID to comment on."),
+    asset_id: AssetIdSchema,
     comment: z.string().min(1).max(50000).describe("The comment text to add."),
-    notify_uids: z.array(z.string()).optional().describe("Person UIDs to notify."),
+    notify_uids: z.array(z.string()).optional().describe("People to notify. Accepts UIDs or email addresses."),
     response_format: ResponseFormatSchema,
   })
   .strict();
 
-function formatAssetMarkdown(a: TdAsset): string {
+function renderAsset(asset: TdAsset): string {
   return [
-    `## ${a.Name} (#${a.ID})`,
-    `- **Status**: ${nameWithId(a.StatusName, a.StatusID)}`,
-    `- **Tag**: ${a.Tag ?? "N/A"}`,
-    `- **Serial Number**: ${a.SerialNumber ?? "N/A"}`,
-    `- **Product Model**: ${a.ProductModelName ?? "N/A"}`,
-    `- **Location**: ${a.LocationName ?? "N/A"}`,
-    `- **Owning Customer**: ${a.OwningCustomerName ?? "N/A"}`,
-    `- **Owning Department**: ${a.OwningDepartmentName ?? "N/A"}`,
+    `## ${asset.Name} (#${asset.ID})`,
+    `- **Status**: ${nameWithId(asset.StatusName, asset.StatusID)}`,
+    `- **Tag**: ${asset.Tag ?? "N/A"}`,
+    `- **Serial Number**: ${asset.SerialNumber ?? "N/A"}`,
+    `- **Product Model**: ${asset.ProductModelName ?? "N/A"}`,
+    `- **Location**: ${asset.LocationName ?? "N/A"}`,
+    `- **Owning Customer**: ${asset.OwningCustomerName ?? "N/A"}`,
+    `- **Owning Department**: ${asset.OwningDepartmentName ?? "N/A"}`,
   ].join("\n");
 }
 
-export function registerAssetTools(server: McpServer): void {
-  server.registerTool(
-    "teamdynamix_search_assets",
-    {
-      title: "Search TeamDynamix Assets",
-      description: `Search for assets/configuration items in a TeamDynamix Assets/CI application.
-
-This is a search (not a full load): custom attributes are NOT returned for each result. Use teamdynamix_get_asset for full details.
-
-Args:
-  - app_id (number): The Assets/CI application ID (use teamdynamix_list_applications)
-  - search_text, serial_number (string, optional)
-  - status_ids, owning_department_ids, location_ids, product_model_ids (number[], optional)
-  - owning_customer_uids (string[], optional)
-  - limit (default 25), offset (default 0)
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: Paginated list of matching assets.
-
-Examples:
-  - Use when: "Find all laptops assigned to John" -> search_text + owning_customer_uids
-  - Don't use when: You already have the asset ID (use teamdynamix_get_asset)
-
-Error Handling:
-  - Returns "No assets found matching the given criteria" if search is empty`,
-      inputSchema: SearchAssetsInputSchema.shape,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    },
-    async (params) => {
-      try {
-        const fetchCount = Math.min(params.offset + params.limit + 1, 1001);
-        const body: Record<string, unknown> = { MaxResults: fetchCount };
-        if (params.search_text) body.SearchText = params.search_text;
-        if (params.serial_number) body.SerialLike = params.serial_number;
-        if (params.status_ids) body.StatusIDs = params.status_ids;
-        if (params.owning_customer_uids) body.CustomerIDs = params.owning_customer_uids;
-        if (params.owning_department_ids) body.OwningDepartmentIDs = params.owning_department_ids;
-        if (params.location_ids) body.LocationIDs = params.location_ids;
-        if (params.product_model_ids) body.ProductModelIDs = params.product_model_ids;
-
-        const results = await tdRequest<TdAsset[]>(`/${params.app_id}/assets/search`, "POST", body);
-        const page = paginate(results ?? [], params.limit, params.offset);
-
-        if (page.items.length === 0) {
-          return { content: [{ type: "text" as const, text: "No assets found matching the given criteria." }] };
-        }
-        let text: string;
-        if (params.response_format === ResponseFormat.MARKDOWN) {
-          const lines = [`# Asset Search Results`, "", `Found ${page.total} asset(s), showing ${page.items.length}`, ""];
-          for (const a of page.items) lines.push(formatAssetMarkdown(a), "");
-          if (page.has_more) lines.push(`_More results available. Use offset=${page.next_offset} to continue._`);
-          text = truncateMarkdown(lines.join("\n"));
-        } else {
-          text = toJsonText(page);
-        }
-        return { content: [{ type: "text" as const, text }], structuredContent: page as unknown as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
-
-  server.registerTool(
-    "teamdynamix_get_asset",
-    {
-      title: "Get TeamDynamix Asset",
-      description: `Gets full details on a single asset/configuration item, including custom attributes.
-
-Args:
-  - app_id (number): The Assets/CI application ID
-  - asset_id (number): The asset ID
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: Full asset details.
-
-Error Handling:
-  - Returns "Error: Resource not found" if asset_id or app_id is invalid`,
-      inputSchema: GetAssetInputSchema.shape,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    },
-    async ({ app_id, asset_id, response_format }) => {
-      try {
-        const asset = await tdRequest<TdAsset>(`/${app_id}/assets/${asset_id}`);
-        const text =
-          response_format === ResponseFormat.MARKDOWN ? truncateMarkdown(formatAssetMarkdown(asset)) : toJsonText(asset);
-        return { content: [{ type: "text" as const, text }], structuredContent: asset as unknown as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
-
-  server.registerTool(
-    "teamdynamix_create_asset",
-    {
-      title: "Create TeamDynamix Asset",
-      description: `Creates a new asset/configuration item.
-
-Args:
-  - app_id (number): The Assets/CI application ID
-  - name (string): Asset name
-  - status_id (number): AssetStatus ID (see teamdynamix_list_asset_statuses)
-  - serial_number, tag, product_model_id, location_id, owning_customer_uid, owning_department_id (optional)
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: The newly created asset, including its assigned ID.
-
-Error Handling:
-  - Returns "Error: ... rejected the request as invalid (400)" if required fields are missing`,
-      inputSchema: CreateAssetInputSchema.shape,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-    },
-    async (params) => {
-      try {
-        const body: Record<string, unknown> = { Name: params.name, StatusID: params.status_id };
-        if (params.serial_number) body.SerialNumber = params.serial_number;
-        if (params.tag) body.Tag = params.tag;
-        if (params.product_model_id) body.ProductModelID = params.product_model_id;
-        if (params.location_id) body.LocationID = params.location_id;
-        if (params.owning_customer_uid) body.OwningCustomerID = params.owning_customer_uid;
-        if (params.owning_department_id) body.OwningDepartmentID = params.owning_department_id;
-        if (params.custom_attributes) body.Attributes = params.custom_attributes;
-
-        const asset = await tdRequest<TdAsset>(`/${params.app_id}/assets`, "POST", body);
-        const text =
-          params.response_format === ResponseFormat.MARKDOWN
-            ? truncateMarkdown(`# Asset Created\n\n${formatAssetMarkdown(asset)}`)
-            : toJsonText(asset);
-        return { content: [{ type: "text" as const, text }], structuredContent: asset as unknown as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
-
-  server.registerTool(
-    "teamdynamix_update_asset",
-    {
-      title: "Update TeamDynamix Asset",
-      description: `Patches an existing asset, changing only the fields provided.
-
-Args:
-  - app_id (number): The Assets/CI application ID
-  - asset_id (number): The asset ID to update
-  - name, status_id, serial_number, tag, location_id, owning_customer_uid, owning_department_id (all optional; at least one required)
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: The updated asset.
-
-Error Handling:
-  - Returns "Error: Resource not found" if asset_id is invalid`,
-      inputSchema: UpdateAssetInputSchema.shape,
-      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
-    },
-    async (params) => {
-      try {
-        const ops: Array<{ op: "replace"; path: string; value: unknown }> = [];
-        if (
-          params.name === undefined &&
-          params.status_id === undefined &&
-          params.serial_number === undefined &&
-          params.tag === undefined &&
-          params.location_id === undefined &&
-          params.owning_customer_uid === undefined &&
-          params.owning_department_id === undefined &&
-          params.custom_attributes === undefined
-        ) {
-          return {
-            isError: true,
-            content: [{ type: "text" as const, text: "Error: At least one field to update must be provided (name, status_id, serial_number, tag, location_id, owning_customer_uid, owning_department_id, or custom_attributes)." }],
-          };
-        }
-        if (params.name !== undefined) ops.push({ op: "replace", path: "/Name", value: params.name });
-        if (params.status_id !== undefined) ops.push({ op: "replace", path: "/StatusID", value: params.status_id });
-        if (params.serial_number !== undefined) ops.push({ op: "replace", path: "/SerialNumber", value: params.serial_number });
-        if (params.tag !== undefined) ops.push({ op: "replace", path: "/Tag", value: params.tag });
-        if (params.location_id !== undefined) ops.push({ op: "replace", path: "/LocationID", value: params.location_id });
-        if (params.owning_customer_uid !== undefined)
-          ops.push({ op: "replace", path: "/OwningCustomerID", value: params.owning_customer_uid });
-        if (params.owning_department_id !== undefined)
-          ops.push({ op: "replace", path: "/OwningDepartmentID", value: params.owning_department_id });
-        if (params.custom_attributes !== undefined)
-          ops.push({ op: "replace", path: "/Attributes", value: params.custom_attributes });
-
-        const asset = await tdRequest<TdAsset>(`/${params.app_id}/assets/${params.asset_id}`, "PATCH", ops);
-        const text =
-          params.response_format === ResponseFormat.MARKDOWN
-            ? truncateMarkdown(`# Asset Updated\n\n${formatAssetMarkdown(asset)}`)
-            : toJsonText(asset);
-        return { content: [{ type: "text" as const, text }], structuredContent: asset as unknown as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
-
-  server.registerTool(
-    "teamdynamix_get_asset_feed",
-    {
-      title: "Get TeamDynamix Asset Feed",
-      description: `Gets the feed entries (comments/history) for an asset, newest first.
-
-Args:
-  - app_id (number): The Assets/CI application ID
-  - asset_id (number): The asset ID
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: List of feed entries.
-
-Error Handling:
-  - Returns "Error: Resource not found" if asset_id is invalid`,
-      inputSchema: GetAssetFeedInputSchema.shape,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    },
-    async ({ app_id, asset_id, response_format }) => {
-      try {
-        const feed = await tdRequest<TdFeedEntry[]>(`/${app_id}/assets/${asset_id}/feed`);
-        if (!feed || feed.length === 0) {
-          return { content: [{ type: "text" as const, text: "No feed entries found for this asset." }] };
-        }
-        let text: string;
-        if (response_format === ResponseFormat.MARKDOWN) {
-          const lines = [`# Feed for Asset #${asset_id}`, ""];
-          for (const entry of feed) {
-            lines.push(`### ${entry.CreatedByName ?? "Unknown"} — ${entry.CreatedDate ?? "N/A"}`);
-            lines.push(entry.Body ?? "(no content)");
-            lines.push("");
-          }
-          text = truncateMarkdown(lines.join("\n"));
-        } else {
-          text = toJsonText(feed);
-        }
-        return { content: [{ type: "text" as const, text }], structuredContent: { items: feed } as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
-
-  server.registerTool(
-    "teamdynamix_add_asset_comment",
-    {
-      title: "Add TeamDynamix Asset Comment",
-      description: `Adds a comment (feed entry) to an asset.
-
-Args:
-  - app_id (number): The Assets/CI application ID
-  - asset_id (number): The asset ID
-  - comment (string): The comment text
-  - notify_uids (string[], optional): Person UIDs to notify
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: The created feed entry.
-
-Error Handling:
-  - Returns "Error: Resource not found" if asset_id is invalid`,
-      inputSchema: AddAssetCommentInputSchema.shape,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-    },
-    async ({ app_id, asset_id, comment, notify_uids, response_format }) => {
-      try {
-        const body: Record<string, unknown> = { Comments: comment };
-        if (notify_uids?.length) body.Notify = notify_uids;
-        const entry = await tdRequest<TdFeedEntry>(`/${app_id}/assets/${asset_id}/feed`, "POST", body);
-        const text =
-          response_format === ResponseFormat.MARKDOWN
-            ? `Comment added to asset #${asset_id}.`
-            : toJsonText(entry);
-        return { content: [{ type: "text" as const, text }], structuredContent: entry as unknown as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
+function renderAssetCompact(asset: TdAsset): string {
+  const identifiers = [asset.Tag, asset.SerialNumber].filter(Boolean).join(" / ") || "no tag/serial";
+  return `- **#${asset.ID}** ${asset.Name} — ${asset.StatusName ?? "?"} — ${identifiers}`;
 }
+
+const ASSETS = { domain: "assets", appIdFrom: (args: { app_id?: number }) => resolveAppId(args.app_id) };
+
+function assetWriteHints(args: { app_id?: number }): string | undefined {
+  const appId = resolveAppId(args.app_id);
+  return combineHints(referenceHint(appId, "assets/statuses", "status_id values"));
+}
+
+export const assetTools: AnyToolDefinition[] = [
+  defineTool({
+    name: "teamdynamix_search_assets",
+    title: "Search TeamDynamix Assets",
+    description:
+      "Searches assets by text, serial, status, owner, location, or product model.\n" +
+      "Returns partial records without custom attributes — use teamdynamix_get_asset for full detail.\n" +
+      "For CMDB configuration items use teamdynamix_search_cis instead.",
+    input: SearchInput,
+    annotations: READ,
+    handler: async (args) => {
+      const body: Record<string, unknown> = {};
+      if (args.search_text) body.SearchText = args.search_text;
+      if (args.serial_number) body.SerialLike = args.serial_number;
+      if (args.status_ids) body.StatusIDs = args.status_ids;
+      const owners = await resolvePersonUids(args.owning_customer_uids);
+      if (owners) body.CustomerIDs = owners;
+      if (args.owning_department_ids) body.OwningDepartmentIDs = args.owning_department_ids;
+      if (args.location_ids) body.LocationIDs = args.location_ids;
+      if (args.product_model_ids) body.ProductModelIDs = args.product_model_ids;
+      return searchPage<TdAsset>(`/${resolveAppId(args.app_id)}/assets/search`, body, args, {
+        sortFields: SORT_FIELDS,
+      });
+    },
+    isEmpty: (page, args) => !args.count_only && page.items.length === 0,
+    emptyMessage: "No assets found matching the given criteria.",
+    render: (page, args) => {
+      if (args.count_only) return renderCount(page, "asset");
+      const lines = resultsHeading("Asset Search Results", page, "asset");
+      if (args.verbosity === "compact") {
+        for (const asset of page.items) lines.push(renderAssetCompact(asset));
+        lines.push("");
+      } else {
+        for (const asset of page.items) lines.push(renderAsset(asset), "");
+      }
+      lines.push(...pagingFooter(page));
+      return lines.join("\n");
+    },
+  }),
+
+  defineTool({
+    name: "teamdynamix_get_asset",
+    title: "Get TeamDynamix Asset",
+    description: "Gets one asset in full, including custom attributes that search results omit.",
+    input: GetInput,
+    annotations: READ,
+    handler: (args) => {
+      const path = `/${resolveAppId(args.app_id)}/assets/${args.asset_id}`;
+      return tdRequest<TdAsset>(path, {
+        cacheKey: path,
+        cacheTtlMs: getConfig().cache.recordTtlMs,
+        cacheTier: "record",
+      });
+    },
+    render: (asset) => renderAsset(asset),
+  }),
+
+  defineTool({
+    name: "teamdynamix_create_asset",
+    title: "Create TeamDynamix Asset",
+    description:
+      "Creates an asset. Requires name and status_id.\nLook up status_id with teamdynamix_list_asset_statuses first.",
+    input: CreateInput,
+    annotations: CREATE,
+    invalidates: ASSETS,
+    errorHints: assetWriteHints,
+    handler: async (args) => {
+      const body: Record<string, unknown> = { Name: args.name, StatusID: args.status_id };
+      if (args.serial_number) body.SerialNumber = args.serial_number;
+      if (args.tag) body.Tag = args.tag;
+      if (args.product_model_id) body.ProductModelID = args.product_model_id;
+      if (args.location_id) body.LocationID = args.location_id;
+      if (args.owning_customer_uid) body.OwningCustomerID = await resolvePersonUid(args.owning_customer_uid);
+      if (args.owning_department_id) body.OwningDepartmentID = args.owning_department_id;
+      if (args.custom_attributes) body.Attributes = args.custom_attributes;
+      return tdRequest<TdAsset>(`/${resolveAppId(args.app_id)}/assets`, { method: "POST", data: body });
+    },
+    render: (asset) => `# Asset Created\n\n${renderAsset(asset)}`,
+  }),
+
+  defineTool({
+    name: "teamdynamix_update_asset",
+    title: "Update TeamDynamix Asset",
+    description: "Patches an asset, changing only the fields you supply.\nAt least one updatable field is required.",
+    input: UpdateInput,
+    annotations: MUTATE,
+    invalidates: ASSETS,
+    errorHints: assetWriteHints,
+    handler: async (args) => {
+      const operations: Array<{ op: "replace"; path: string; value: unknown }> = [];
+      const add = (path: string, value: unknown) => {
+        if (value !== undefined) operations.push({ op: "replace", path, value });
+      };
+      add("/Name", args.name);
+      add("/StatusID", args.status_id);
+      add("/SerialNumber", args.serial_number);
+      add("/Tag", args.tag);
+      add("/LocationID", args.location_id);
+      add("/OwningCustomerID", args.owning_customer_uid ? await resolvePersonUid(args.owning_customer_uid) : undefined);
+      add("/OwningDepartmentID", args.owning_department_id);
+      add("/Attributes", args.custom_attributes);
+      if (operations.length === 0) {
+        throw new ToolInputError(
+          "At least one field to update must be provided (name, status_id, serial_number, tag, location_id, owning_customer_uid, owning_department_id, or custom_attributes)."
+        );
+      }
+      return tdRequest<TdAsset>(`/${resolveAppId(args.app_id)}/assets/${args.asset_id}`, {
+        method: "PATCH",
+        data: operations,
+      });
+    },
+    render: (asset) => `# Asset Updated\n\n${renderAsset(asset)}`,
+  }),
+
+  defineTool({
+    name: "teamdynamix_get_asset_feed",
+    title: "Get TeamDynamix Asset Feed",
+    description: "Gets an asset's feed entries (comments and history), newest first.\nPage with limit/offset.",
+    input: FeedInput,
+    annotations: READ,
+    handler: async (args) => {
+      const path = `/${resolveAppId(args.app_id)}/assets/${args.asset_id}/feed`;
+      const feed = await tdRequest<TdFeedEntry[]>(path, {
+        cacheKey: path,
+        cacheTtlMs: getConfig().cache.recordTtlMs,
+        cacheTier: "record",
+      });
+      return paginate(feed ?? [], args.limit, args.offset);
+    },
+    isEmpty: (page) => page.items.length === 0,
+    emptyMessage: "No feed entries found for this asset.",
+    render: (page, args) => {
+      const body = renderFeed(`Feed for Asset #${args.asset_id} (${page.count} of ${page.total})`, page.items);
+      return page.has_more ? `${body}\n_More entries available. Use offset=${page.next_offset}._` : body;
+    },
+  }),
+
+  defineTool({
+    name: "teamdynamix_add_asset_comment",
+    title: "Add TeamDynamix Asset Comment",
+    description: "Adds a comment (feed entry) to an asset, optionally notifying people.",
+    input: CommentInput,
+    annotations: CREATE,
+    invalidates: ASSETS,
+    handler: async (args) => {
+      const body: Record<string, unknown> = { Comments: args.comment };
+      const notify = await resolvePersonUids(args.notify_uids);
+      if (notify?.length) body.Notify = notify;
+      return tdRequest<TdFeedEntry>(`/${resolveAppId(args.app_id)}/assets/${args.asset_id}/feed`, {
+        method: "POST",
+        data: body,
+      });
+    },
+    render: (_entry, args) => `Comment added to asset #${args.asset_id}.`,
+  }),
+];

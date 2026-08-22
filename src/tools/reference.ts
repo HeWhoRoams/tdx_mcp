@@ -1,9 +1,12 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { tdRequest, handleApiError } from "../services/client.js";
-import { toJsonText, truncateMarkdown } from "../services/format.js";
+import { getConfig } from "../config.js";
+import { READ } from "../framework/annotations.js";
+import { defineTool, items, type AnyToolDefinition } from "../framework/defineTool.js";
 import { AppIdSchema, ResponseFormatSchema } from "../schemas/common.js";
-import { ResponseFormat } from "../types.js";
+import { tdRequest } from "../services/client.js";
+import { resolveAppId } from "../services/context.js";
+import { renderNamedList, truncate } from "../services/format.js";
+import type { TdApp } from "../types.js";
 
 interface NamedRef {
   ID: number;
@@ -12,321 +15,242 @@ interface NamedRef {
   [key: string]: unknown;
 }
 
-function listMarkdown(title: string, items: NamedRef[]): string {
-  const lines = [`# ${title}`, ""];
-  for (const item of items) {
-    lines.push(`- **${item.Name}** (ID: ${item.ID})${item.IsActive === false ? " _[inactive]_" : ""}`);
-  }
-  return lines.join("\n");
-}
+const GlobalInput = z.object({ response_format: ResponseFormatSchema }).strict();
+const AppScopedInput = z.object({ app_id: AppIdSchema, response_format: ResponseFormatSchema }).strict();
 
-/** Registers a simple read-only "list reference data" tool that GETs an endpoint returning an array. */
-function registerSimpleListTool(
-  server: McpServer,
-  toolName: string,
-  title: string,
-  endpointTemplate: (appId?: number) => string,
-  description: string,
-  requiresAppId: boolean
-): void {
-  const schema = requiresAppId
-    ? z.object({ app_id: AppIdSchema, response_format: ResponseFormatSchema }).strict()
-    : z.object({ response_format: ResponseFormatSchema }).strict();
+const ApplicationsInput = z
+  .object({
+    app_type: z
+      .string()
+      .optional()
+      .describe("Only return applications of this type, e.g. 'Ticketing', 'Assets', 'Projects'. Case-insensitive."),
+    include_inactive: z.boolean().default(false).describe("Include applications that are not active."),
+    response_format: ResponseFormatSchema,
+  })
+  .strict();
 
-  server.registerTool(
-    toolName,
-    {
-      title,
-      description,
-      inputSchema: schema.shape,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+/**
+ * Reference data changes rarely and every write path requires it first, so these
+ * responses are cached for TEAMDYNAMIX_CACHE_TTL_MS.
+ */
+function listTool<Shape extends z.ZodRawShape>(spec: {
+  name: string;
+  title: string;
+  description: string;
+  input: z.ZodObject<Shape>;
+  endpoint: (args: z.infer<z.ZodObject<Shape>>) => string;
+}): AnyToolDefinition {
+  return defineTool({
+    name: spec.name,
+    title: spec.title,
+    description: spec.description,
+    input: spec.input,
+    annotations: READ,
+    handler: async (args) => {
+      const endpoint = spec.endpoint(args);
+      const data = await tdRequest<NamedRef[]>(endpoint, {
+        cacheKey: endpoint,
+        cacheTtlMs: getConfig().cache.referenceTtlMs,
+      });
+      return items(data ?? []);
     },
-    async (params: Record<string, unknown>) => {
-      try {
-        const appId = requiresAppId ? (params.app_id as number) : undefined;
-        const items = await tdRequest<NamedRef[]>(endpointTemplate(appId));
-        const responseFormat = params.response_format as ResponseFormat;
-        if (!items || items.length === 0) {
-          return { content: [{ type: "text" as const, text: "No results found." }] };
-        }
-        const text =
-          responseFormat === ResponseFormat.MARKDOWN ? truncateMarkdown(listMarkdown(title, items)) : toJsonText(items);
-        return { content: [{ type: "text" as const, text }], structuredContent: { items } };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }] };
-      }
-    }
-  );
+    isEmpty: (data) => data.items.length === 0,
+    emptyMessage: "No results found.",
+    render: (data) => renderNamedList(spec.title, data.items),
+  });
 }
 
-export function registerReferenceTools(server: McpServer): void {
-  registerSimpleListTool(
-    server,
-    "teamdynamix_list_applications",
-    "List TeamDynamix Applications",
-    () => `/applications`,
-    `Lists all platform applications in this TeamDynamix organization (ticketing apps, asset/CI apps, etc.), with their IDs.
+const CustomAttributesInput = z
+  .object({
+    component_id: z.number().int().positive().describe("Component type ID: 9 = Ticket, 63 = Asset/CI."),
+    app_id: z.number().int().positive().optional().describe("Optional: scope to a specific application."),
+    response_format: ResponseFormatSchema,
+  })
+  .strict();
 
-This is the primary way to discover the 'app_id' values needed by ticket and asset tools.
+interface CustomAttribute {
+  ID: number;
+  Name: string;
+  FieldType?: string;
+  DataType?: string;
+  Choices?: Array<{ ID: number; Name: string }>;
+  [key: string]: unknown;
+}
 
-Args:
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: List of applications with ID and Name.`,
-    false
-  );
-
-  registerSimpleListTool(
-    server,
-    "teamdynamix_list_ticket_types",
-    "List TeamDynamix Ticket Types",
-    (appId) => `/${appId}/tickets/types`,
-    `Lists the ticket types configured for a ticketing application. Ticket type IDs are required when creating tickets.
-
-Args:
-  - app_id (number): The ticketing application ID
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: List of ticket types with ID and Name.`,
-    true
-  );
-
-  registerSimpleListTool(
-    server,
-    "teamdynamix_list_ticket_statuses",
-    "List TeamDynamix Ticket Statuses",
-    (appId) => `/${appId}/tickets/statuses`,
-    `Lists the ticket statuses configured for a ticketing application.
-
-Args:
-  - app_id (number): The ticketing application ID
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: List of ticket statuses with ID and Name.`,
-    true
-  );
-
-  registerSimpleListTool(
-    server,
-    "teamdynamix_list_ticket_priorities",
-    "List TeamDynamix Ticket Priorities",
-    (appId) => `/${appId}/tickets/priorities`,
-    `Lists the ticket priorities configured for a ticketing application.
-
-Args:
-  - app_id (number): The ticketing application ID
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: List of ticket priorities with ID and Name.`,
-    true
-  );
-
-  registerSimpleListTool(
-    server,
-    "teamdynamix_list_ticket_sources",
-    "List TeamDynamix Ticket Sources",
-    (appId) => `/${appId}/tickets/sources`,
-    `Lists the ticket sources (e.g. Email, Phone, Web) configured for a ticketing application.
-
-Args:
-  - app_id (number): The ticketing application ID
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: List of ticket sources with ID and Name.`,
-    true
-  );
-
-  registerSimpleListTool(
-    server,
-    "teamdynamix_list_ticket_forms",
-    "List TeamDynamix Ticket Forms",
-    (appId) => `/${appId}/tickets/forms`,
-    `Lists the active ticket forms configured for a ticketing application.
-
-Args:
-  - app_id (number): The ticketing application ID
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: List of ticket forms with ID and Name.`,
-    true
-  );
-
-  registerSimpleListTool(
-    server,
-    "teamdynamix_list_asset_statuses",
-    "List TeamDynamix Asset Statuses",
-    (appId) => `/${appId}/assets/statuses`,
-    `Lists the asset statuses configured for an Assets/CI application. Required when creating or updating assets.
-
-Args:
-  - app_id (number): The Assets/CI application ID
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: List of asset statuses with ID and Name.`,
-    true
-  );
-
-  registerSimpleListTool(
-    server,
-    "teamdynamix_list_accounts",
-    "List TeamDynamix Accounts/Departments",
-    () => `/accounts`,
-    `Lists Accounts/Departments in this TeamDynamix organization. These represent the customer's organizational unit and are commonly referenced as account_id/AccountID on tickets, projects, and assets.
-
-Args:
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: List of accounts/departments with ID and Name.`,
-    false
-  );
-
-  registerSimpleListTool(
-    server,
-    "teamdynamix_list_locations",
-    "List TeamDynamix Locations",
-    () => `/locations`,
-    `Lists all active locations in the TeamDynamix organization. Location IDs are used when creating or filtering assets.
-
-Args:
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: List of locations with ID and Name.`,
-    false
-  );
-
-  registerSimpleListTool(
-    server,
-    "teamdynamix_list_ticket_impacts",
-    "List TeamDynamix Ticket Impacts",
-    (appId) => `/${appId}/tickets/impacts`,
-    `Lists the ticket impact values configured for a ticketing application.
-
-Args:
-  - app_id (number): The ticketing application ID
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: List of ticket impacts with ID and Name.`,
-    true
-  );
-
-  registerSimpleListTool(
-    server,
-    "teamdynamix_list_ticket_urgencies",
-    "List TeamDynamix Ticket Urgencies",
-    (appId) => `/${appId}/tickets/urgencies`,
-    `Lists the ticket urgency values configured for a ticketing application.
-
-Args:
-  - app_id (number): The ticketing application ID
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: List of ticket urgencies with ID and Name.`,
-    true
-  );
-
-  registerSimpleListTool(
-    server,
-    "teamdynamix_list_product_models",
-    "List TeamDynamix Product Models",
-    (appId) => `/${appId}/assets/models`,
-    `Lists all active product models for an Assets application. Product model IDs are used when creating or filtering assets.
-
-Args:
-  - app_id (number): The Assets application ID
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: List of product models with ID and Name.`,
-    true
-  );
-
-  registerSimpleListTool(
-    server,
-    "teamdynamix_list_ci_types",
-    "List TeamDynamix CI Types",
-    (appId) => `/${appId}/cmdb/types`,
-    `Lists the configuration item types configured for an Assets/CMDB application. CI type IDs are required when creating CIs.
-
-Args:
-  - app_id (number): The Assets/CMDB application ID
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: List of CI types with ID and Name.`,
-    true
-  );
-
-  registerSimpleListTool(
-    server,
-    "teamdynamix_list_ci_relationship_types",
-    "List TeamDynamix CI Relationship Types",
-    (appId) => `/${appId}/cmdb/relationshiptypes`,
-    `Lists the CI relationship types configured for an Assets/CMDB application. Required when adding relationships between CIs with teamdynamix_add_ci_relationship.
-
-Args:
-  - app_id (number): The Assets/CMDB application ID
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: List of relationship types with ID and Name.`,
-    true
-  );
-
-  // Custom attributes tool — uses a different pattern (query param, not path param)
-  server.registerTool(
-    "teamdynamix_list_custom_attributes",
-    {
-      title: "List TeamDynamix Custom Attributes",
-      description: `Lists the custom attribute definitions for a given component type. Use this to discover the attribute IDs and valid choice values needed to read or set custom attributes on tickets, assets, or CIs.
-
-Common component_id values:
-  - 9  = Ticket
-  - 63 = Asset / CI
-
-Args:
-  - component_id (number): The component type ID (9 for Ticket, 63 for Asset/CI)
-  - app_id (number, optional): Scope to a specific application (recommended)
-  - response_format ('markdown' | 'json', default 'markdown')
-
-Returns: List of custom attribute definitions including ID, Name, field type, and choice options.
-
-Error Handling:
-  - Returns empty list if no custom attributes are configured for the component`,
-      inputSchema: z
-        .object({
-          component_id: z.number().int().positive().describe("The component type ID (9 = Ticket, 63 = Asset/CI)."),
-          app_id: z.number().int().positive().optional().describe("Optional: scope to a specific application."),
-          response_format: ResponseFormatSchema,
-        })
-        .strict().shape,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+export const referenceTools: AnyToolDefinition[] = [
+  defineTool({
+    name: "teamdynamix_list_applications",
+    title: "List TeamDynamix Applications",
+    description:
+      "Lists platform applications with the app_id every other tool needs, grouped by type.\n" +
+      "Filter with app_type='Ticketing' to narrow a large organization to its ticketing apps.",
+    input: ApplicationsInput,
+    annotations: READ,
+    handler: async (args) => {
+      const all = await tdRequest<TdApp[]>("/applications", {
+        cacheKey: "/applications",
+        cacheTtlMs: getConfig().cache.referenceTtlMs,
+      });
+      const wanted = args.app_type?.toLowerCase();
+      const filtered = (all ?? []).filter(
+        (app) =>
+          (args.include_inactive || app.Active !== false) &&
+          (wanted === undefined || app.Type?.toLowerCase() === wanted)
+      );
+      return items(filtered);
     },
-    async ({ component_id, app_id, response_format }) => {
-      try {
-        const queryParams: Record<string, unknown> = { componentId: component_id };
-        if (app_id !== undefined) queryParams.appId = app_id;
-        const attrs = await tdRequest<Array<Record<string, unknown>>>(`/attributes/custom`, "GET", undefined, queryParams);
-        if (!attrs || attrs.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: `No custom attributes found for component ID ${component_id}.` }],
-            structuredContent: { items: [] },
-          };
-        }
-        let text: string;
-        if (response_format === ResponseFormat.MARKDOWN) {
-          const lines = [`# Custom Attributes for Component ${component_id} (${attrs.length})`, ""];
-          for (const attr of attrs) {
-            lines.push(`- **${attr.Name}** (ID: ${attr.ID}, type: ${attr.FieldType ?? attr.DataType ?? "unknown"})`);
-            const choices = attr.Choices as Array<Record<string, unknown>> | undefined;
-            if (choices && choices.length > 0) {
-              for (const c of choices) lines.push(`  - Choice: ${c.Name} (ID: ${c.ID})`);
-            }
-          }
-          text = truncateMarkdown(lines.join("\n"));
-        } else {
-          text = toJsonText(attrs);
-        }
-        return { content: [{ type: "text" as const, text }], structuredContent: { items: attrs } as Record<string, unknown> };
-      } catch (error) {
-        return { isError: true, content: [{ type: "text" as const, text: handleApiError(error) }], structuredContent: {} };
+    isEmpty: (data) => data.items.length === 0,
+    emptyMessage: "No applications matched. Omit app_type to see every application.",
+    render: (data) => {
+      const byType = new Map<string, TdApp[]>();
+      for (const app of data.items) {
+        const type = app.Type ?? "Other";
+        const existing = byType.get(type);
+        if (existing) existing.push(app);
+        else byType.set(type, [app]);
       }
-    }
-  );
-}
+      const defaultAppId = getConfig().defaultAppId;
+      const lines = [`# TeamDynamix Applications (${data.items.length})`, ""];
+      for (const [type, apps] of [...byType.entries()].sort()) {
+        lines.push(`## ${type} (${apps.length})`, "");
+        for (const app of apps) {
+          const flags = [
+            app.Active === false ? "inactive" : undefined,
+            app.AppID === defaultAppId ? "server default" : undefined,
+          ].filter(Boolean);
+          lines.push(`- **${app.Name}** — app_id: ${app.AppID}${flags.length ? ` _[${flags.join(", ")}]_` : ""}`);
+        }
+        lines.push("");
+      }
+      return truncate(lines.join("\n"));
+    },
+  }),
+
+  listTool({
+    name: "teamdynamix_list_ticket_types",
+    title: "List TeamDynamix Ticket Types",
+    description:
+      "Lists ticket types for a ticketing application.\nA type_id from here is required to create a ticket.",
+    input: AppScopedInput,
+    endpoint: (args) => `/${resolveAppId(args.app_id)}/tickets/types`,
+  }),
+  listTool({
+    name: "teamdynamix_list_ticket_statuses",
+    title: "List TeamDynamix Ticket Statuses",
+    description:
+      "Lists ticket statuses for a ticketing application.\nUse for status_id values when creating, updating, or filtering tickets.",
+    input: AppScopedInput,
+    endpoint: (args) => `/${resolveAppId(args.app_id)}/tickets/statuses`,
+  }),
+  listTool({
+    name: "teamdynamix_list_ticket_priorities",
+    title: "List TeamDynamix Ticket Priorities",
+    description:
+      "Lists ticket priorities for a ticketing application.\nUse for priority_id values when creating, updating, or filtering tickets.",
+    input: AppScopedInput,
+    endpoint: (args) => `/${resolveAppId(args.app_id)}/tickets/priorities`,
+  }),
+  listTool({
+    name: "teamdynamix_list_ticket_sources",
+    title: "List TeamDynamix Ticket Sources",
+    description: "Lists ticket sources (Email, Phone, Web) for a ticketing application.\nUse for source_id when creating tickets.",
+    input: AppScopedInput,
+    endpoint: (args) => `/${resolveAppId(args.app_id)}/tickets/sources`,
+  }),
+  listTool({
+    name: "teamdynamix_list_ticket_forms",
+    title: "List TeamDynamix Ticket Forms",
+    description: "Lists active ticket forms for a ticketing application.",
+    input: AppScopedInput,
+    endpoint: (args) => `/${resolveAppId(args.app_id)}/tickets/forms`,
+  }),
+  listTool({
+    name: "teamdynamix_list_ticket_impacts",
+    title: "List TeamDynamix Ticket Impacts",
+    description: "Lists ticket impact values for a ticketing application.",
+    input: AppScopedInput,
+    endpoint: (args) => `/${resolveAppId(args.app_id)}/tickets/impacts`,
+  }),
+  listTool({
+    name: "teamdynamix_list_ticket_urgencies",
+    title: "List TeamDynamix Ticket Urgencies",
+    description: "Lists ticket urgency values for a ticketing application.",
+    input: AppScopedInput,
+    endpoint: (args) => `/${resolveAppId(args.app_id)}/tickets/urgencies`,
+  }),
+  listTool({
+    name: "teamdynamix_list_asset_statuses",
+    title: "List TeamDynamix Asset Statuses",
+    description: "Lists asset statuses for an Assets application.\nRequired when creating or updating assets.",
+    input: AppScopedInput,
+    endpoint: (args) => `/${resolveAppId(args.app_id)}/assets/statuses`,
+  }),
+  listTool({
+    name: "teamdynamix_list_product_models",
+    title: "List TeamDynamix Product Models",
+    description: "Lists active product models for an Assets application.\nUse for product_model_id when creating or filtering assets.",
+    input: AppScopedInput,
+    endpoint: (args) => `/${resolveAppId(args.app_id)}/assets/models`,
+  }),
+  listTool({
+    name: "teamdynamix_list_ci_types",
+    title: "List TeamDynamix CI Types",
+    description: "Lists configuration item types for an Assets/CMDB application.\nA type_id from here is required to create a CI.",
+    input: AppScopedInput,
+    endpoint: (args) => `/${resolveAppId(args.app_id)}/cmdb/types`,
+  }),
+  listTool({
+    name: "teamdynamix_list_ci_relationship_types",
+    title: "List TeamDynamix CI Relationship Types",
+    description:
+      "Lists CI relationship types for an Assets/CMDB application.\nRequired by teamdynamix_add_ci_relationship.",
+    input: AppScopedInput,
+    endpoint: (args) => `/${resolveAppId(args.app_id)}/cmdb/relationshiptypes`,
+  }),
+  listTool({
+    name: "teamdynamix_list_accounts",
+    title: "List TeamDynamix Accounts/Departments",
+    description:
+      "Lists organization Accounts/Departments.\nUse for account_id on tickets, projects, and assets.",
+    input: GlobalInput,
+    endpoint: () => "/accounts",
+  }),
+  listTool({
+    name: "teamdynamix_list_locations",
+    title: "List TeamDynamix Locations",
+    description: "Lists active organization locations.\nUse for location_id when creating or filtering assets.",
+    input: GlobalInput,
+    endpoint: () => "/locations",
+  }),
+
+  defineTool({
+    name: "teamdynamix_list_custom_attributes",
+    title: "List TeamDynamix Custom Attributes",
+    description:
+      "Lists custom attribute definitions and their valid choice values for a component type.\n" +
+      "Use component_id=9 for tickets, 63 for assets/CIs, then pass IDs to create/update tools.",
+    input: CustomAttributesInput,
+    annotations: READ,
+    handler: async (args) => {
+      const params: Record<string, unknown> = { componentId: args.component_id };
+      if (args.app_id !== undefined) params.appId = args.app_id;
+      const cacheKey = `/attributes/custom?${args.component_id}:${args.app_id ?? "all"}`;
+      const attrs = await tdRequest<CustomAttribute[]>("/attributes/custom", {
+        params,
+        cacheKey,
+        cacheTtlMs: getConfig().cache.referenceTtlMs,
+      });
+      return items(attrs ?? []);
+    },
+    isEmpty: (data) => data.items.length === 0,
+    emptyMessage: "No custom attributes are configured for that component type.",
+    render: (data, args) => {
+      const lines = [`# Custom Attributes for Component ${args.component_id} (${data.items.length})`, ""];
+      for (const attr of data.items) {
+        lines.push(`- **${attr.Name}** (ID: ${attr.ID}, type: ${attr.FieldType ?? attr.DataType ?? "unknown"})`);
+        for (const choice of attr.Choices ?? []) lines.push(`  - Choice: ${choice.Name} (ID: ${choice.ID})`);
+      }
+      return truncate(lines.join("\n"));
+    },
+  }),
+];
