@@ -17,10 +17,7 @@ import { allTools } from "../src/tools/index.js";
 const POLICY_PATH = fileURLToPath(new URL("../config/tool-policy.json", import.meta.url));
 
 function policyFrom(contents: object) {
-  const dir = mkdtempSync(join(tmpdir(), "tdx-policy-"));
-  const path = join(dir, "tool-policy.json");
-  writeFileSync(path, JSON.stringify(contents), "utf8");
-  return path;
+  return { policyData: contents, source: "test fixture" };
 }
 
 function subject(overrides: Partial<PolicySubject> = {}): PolicySubject {
@@ -29,7 +26,7 @@ function subject(overrides: Partial<PolicySubject> = {}): PolicySubject {
 
 describe("built-in defaults", () => {
   it("denies the destructive tiers so a missing policy file is still safe", () => {
-    const policy = resolveToolPolicy({ policyFile: policyFrom({}), readOnly: false });
+    const policy = resolveToolPolicy(policyFrom({}));
     expect(policy.defaults).toEqual(BUILT_IN_DEFAULTS);
     expect(isToolAllowed(policy, subject({ capability: "read" }))).toBe(true);
     expect(isToolAllowed(policy, subject({ capability: "create" }))).toBe(true);
@@ -46,7 +43,7 @@ describe("built-in defaults", () => {
 describe("rule precedence", () => {
   it("lets a domain rule override the capability default", () => {
     const policy = resolveToolPolicy({
-      policyFile: policyFrom({ domains: { tickets: { edit: "allow" } } }),
+      ...policyFrom({ domains: { tickets: { edit: "allow" } } }),
       readOnly: false,
     });
     expect(isToolAllowed(policy, subject())).toBe(true);
@@ -55,7 +52,7 @@ describe("rule precedence", () => {
 
   it("lets a tool rule override its domain rule", () => {
     const policy = resolveToolPolicy({
-      policyFile: policyFrom({
+      ...policyFrom({
         domains: { tickets: { edit: "allow" } },
         tools: { teamdynamix_edit_ticket: "deny" },
       }),
@@ -66,7 +63,7 @@ describe("rule precedence", () => {
 
   it("treats inherit as no opinion", () => {
     const policy = resolveToolPolicy({
-      policyFile: policyFrom({
+      ...policyFrom({
         domains: { tickets: { edit: "allow" } },
         tools: { teamdynamix_edit_ticket: "inherit" },
       }),
@@ -77,7 +74,7 @@ describe("rule precedence", () => {
 
   it("denies via TDX_DENY_TOOLS even when the file allows the tool", () => {
     const policy = resolveToolPolicy({
-      policyFile: policyFrom({ tools: { teamdynamix_edit_ticket: "allow" } }),
+      ...policyFrom({ tools: { teamdynamix_edit_ticket: "allow" } }),
       denyTools: ["teamdynamix_edit_ticket"],
       readOnly: false,
     });
@@ -97,7 +94,7 @@ describe("rule precedence", () => {
 
   it("collapses everything to read under TEAMDYNAMIX_READ_ONLY", () => {
     const policy = resolveToolPolicy({
-      policyFile: policyFrom({ defaults: { edit: "allow", destroy: "allow" } }),
+      ...policyFrom({ defaults: { edit: "allow", destroy: "allow" } }),
       readOnly: true,
     });
     for (const capability of CAPABILITIES) {
@@ -111,53 +108,46 @@ describe("read-modify-write escalation", () => {
   const file = { defaults: { edit: "allow" }, treatReadModifyWriteAsDestroy: true };
 
   it("judges read-modify-write tools under the destroy tier when enabled", () => {
-    const policy = resolveToolPolicy({ policyFile: policyFrom(file), readOnly: false });
+    const policy = resolveToolPolicy({ ...policyFrom(file), readOnly: false });
     expect(isToolAllowed(policy, subject({ readModifyWrite: true }))).toBe(false);
     expect(isToolAllowed(policy, subject())).toBe(true);
   });
 
   it("leaves them on the edit tier by default", () => {
-    const policy = resolveToolPolicy({ policyFile: policyFrom({ defaults: { edit: "allow" } }), readOnly: false });
+    const policy = resolveToolPolicy({ ...policyFrom({ defaults: { edit: "allow" } }), readOnly: false });
     expect(isToolAllowed(policy, subject({ readModifyWrite: true }))).toBe(true);
   });
 });
 
 describe("invalid policy files", () => {
-  it("throws rather than silently allowing when the file is missing", () => {
-    expect(() => resolveToolPolicy({ policyFile: join(tmpdir(), "definitely-not-here.json"), readOnly: false })).toThrow(
-      ToolPolicyError
-    );
+  it("accepts pre-validated policy data without re-parsing it", () => {
+    const policy = resolveToolPolicy({
+      policyData: { defaults: { edit: "allow" } },
+      source: "explicit validated data",
+      readOnly: false,
+    });
+    expect(policy.defaults.edit).toBe("allow");
   });
 
-  it("rejects an unknown domain", () => {
-    const path = policyFrom({ domains: { ticketz: { edit: "allow" } } });
-    expect(() => resolveToolPolicy({ policyFile: path, readOnly: false })).toThrow(/unknown domain/);
-  });
-
-  it("rejects an unknown rule value", () => {
-    const path = policyFrom({ defaults: { edit: "maybe" } });
-    expect(() => resolveToolPolicy({ policyFile: path, readOnly: false })).toThrow(ToolPolicyError);
-  });
-
-  it("rejects an unknown top-level key", () => {
-    const path = policyFrom({ toolz: {} });
-    expect(() => resolveToolPolicy({ policyFile: path, readOnly: false })).toThrow(ToolPolicyError);
+  it("rejects invalid policy data at validation time", () => {
+    const invalid = { defaults: { edit: "maybe" } };
+    expect(() => ToolPolicyFileSchema.safeParse(invalid)).not.toEqual({ success: true });
   });
 });
 
 describe("mayModify", () => {
   it("is false when nothing but reads can be permitted", () => {
     const path = policyFrom({ defaults: { create: "deny" } });
-    expect(resolveToolPolicy({ policyFile: path, readOnly: false }).mayModify).toBe(false);
+    expect(resolveToolPolicy({ ...path, readOnly: false }).mayModify).toBe(false);
   });
 
   it("stays true for create-only policies, since some create endpoints use PUT", () => {
-    expect(resolveToolPolicy({ policyFile: policyFrom({}), readOnly: false }).mayModify).toBe(true);
+    expect(resolveToolPolicy({ ...policyFrom({}), readOnly: false }).mayModify).toBe(true);
   });
 
   it("is true once any rule allows a write tier", () => {
     const path = policyFrom({ defaults: { create: "deny" }, domains: { tickets: { edit: "allow" } } });
-    expect(resolveToolPolicy({ policyFile: path, readOnly: false }).mayModify).toBe(true);
+    expect(resolveToolPolicy({ ...path, readOnly: false }).mayModify).toBe(true);
   });
 });
 

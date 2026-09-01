@@ -1,5 +1,8 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { resolveToolPolicy, ToolPolicyError, type ToolPolicy } from "./policy/index.js";
+import { ToolPolicyFileSchema, type ToolPolicyFile } from "./policy/schema.js";
 
 /**
  * Single source of truth for environment configuration. Parsed and validated
@@ -141,6 +144,33 @@ function splitList(value: string | undefined): string[] {
   return value?.split(",").map((entry) => entry.trim()).filter(Boolean) ?? [];
 }
 
+const DEFAULT_POLICY_PATH = fileURLToPath(new URL("../config/tool-policy.json", import.meta.url));
+
+function loadPolicyFile(path: string, required: boolean): { data: unknown; source: string } | undefined {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (error) {
+    if (!required && (error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw new ToolPolicyError(`Could not read tool policy file at ${path}: ${(error as Error).message}`);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new ToolPolicyError(`Tool policy file at ${path} is not valid JSON: ${(error as Error).message}`);
+  }
+
+  const validated = ToolPolicyFileSchema.safeParse(parsed);
+  if (!validated.success) {
+    const details = validated.error.issues.map((issue) => `  - ${issue.path.join(".") || "(root)"}: ${issue.message}`);
+    throw new ToolPolicyError(`Invalid tool policy file at ${path}:\n${details.join("\n")}`);
+  }
+
+  return { data: validated.data, source: path };
+}
+
 function buildConfig(env: NodeJS.ProcessEnv): Config {
   const parsed = RawEnvSchema.safeParse(env);
   if (!parsed.success) {
@@ -182,8 +212,11 @@ function buildConfig(env: NodeJS.ProcessEnv): Config {
 
   let toolPolicy: ToolPolicy;
   try {
+    const explicitPolicyPath = raw.TDX_TOOL_POLICY_FILE?.trim();
+    const policyPath = explicitPolicyPath || DEFAULT_POLICY_PATH;
+    const loaded = loadPolicyFile(policyPath, explicitPolicyPath !== undefined && explicitPolicyPath !== "");
     toolPolicy = resolveToolPolicy({
-      ...(raw.TDX_TOOL_POLICY_FILE ? { policyFile: raw.TDX_TOOL_POLICY_FILE } : {}),
+      ...(loaded ? { policyData: loaded.data as Partial<ToolPolicyFile>, source: loaded.source } : {}),
       allowCapabilities: splitList(raw.TDX_ALLOW_CAPABILITIES),
       allowTools: splitList(raw.TDX_ALLOW_TOOLS),
       denyTools: splitList(raw.TDX_DENY_TOOLS),

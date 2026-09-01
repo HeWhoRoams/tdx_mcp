@@ -180,7 +180,7 @@ uses to decide what a given deployment may do:
 |---|---|---|---|
 | `read` | Changes nothing | `teamdynamix_search_tickets`, `teamdynamix_get_report` | allow |
 | `create` | Adds new data; nothing existing is overwritten | `teamdynamix_create_ticket`, `teamdynamix_add_ticket_comment` | allow |
-| `edit` | Overwrites fields on an existing record | `teamdynamix_edit_ticket`, `teamdynamix_edit_asset` | **deny** |
+| `edit` | Overwrites fields on an existing record | `teamdynamix_edit_ticket`, `teamdynamix_edit_asset`, `teamdynamix_edit_ci`, `teamdynamix_edit_ticket_task` | **deny** |
 | `destroy` | Deletes or unlinks existing data | `teamdynamix_remove_group_members` | **deny** |
 
 The `create`/`edit` split follows TeamDynamix's own vocabulary. Posting to a

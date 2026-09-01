@@ -227,16 +227,23 @@ async function run(): Promise<void> {
     console.error("Refusing to run: TEAMDYNAMIX_READ_ONLY=true, so write tools are not registered.");
     process.exit(1);
   }
-  if (config.toolPolicy.defaults.edit !== "allow") {
+
+  collectHandlers();
+
+  const requiredWriteHandlers =
+    tier.toLowerCase() === "b"
+      ? ["teamdynamix_create_ticket", "teamdynamix_edit_ticket", "teamdynamix_add_ticket_comment"]
+      : ["teamdynamix_create_ticket"];
+  const missingWriteHandlers = requiredWriteHandlers.filter((name) => !handlers.has(name));
+  if (missingWriteHandlers.length > 0) {
     console.error(
-      "Refusing to run: the tool policy denies the edit tier, so teamdynamix_edit_ticket is not registered. " +
-        "Set TDX_ALLOW_CAPABILITIES=read,create,edit,destroy for this run."
+      `Refusing to run: the effective policy does not register the required write handlers for tier ${tier}: ` +
+        `${missingWriteHandlers.join(", ")}. Check tool- or domain-level overrides as well as TDX_ALLOW_CAPABILITIES.`
     );
     process.exit(1);
   }
 
   console.log(`\nWrite smoke test → ${config.apiBaseUrl} app ${appId} (tier ${tier})`);
-  collectHandlers();
 
   await tierA(appId);
   if (tier.toLowerCase() === "b") await tierB(appId);

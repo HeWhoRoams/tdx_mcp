@@ -1,7 +1,5 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { CAPABILITIES, type Capability } from "../framework/annotations.js";
-import { ToolPolicyFileSchema, type CapabilityRules, type Rule, type ToolDomain } from "./schema.js";
+import type { CapabilityRules, Rule, ToolDomain, ToolPolicyFile } from "./schema.js";
 
 export { TOOL_DOMAINS, type Rule, type ToolDomain } from "./schema.js";
 
@@ -15,9 +13,6 @@ export const BUILT_IN_DEFAULTS: Record<Capability, Rule> = {
   edit: "deny",
   destroy: "deny",
 };
-
-/** Resolved from `config/tool-policy.json` unless TDX_TOOL_POLICY_FILE points elsewhere. */
-export const DEFAULT_POLICY_PATH = fileURLToPath(new URL("../../config/tool-policy.json", import.meta.url));
 
 export interface ToolPolicy {
   defaults: Record<Capability, Rule>;
@@ -43,42 +38,17 @@ export interface PolicySubject {
 export class ToolPolicyError extends Error {}
 
 export interface PolicyInput {
-  policyFile?: string;
+  policyData?: Partial<ToolPolicyFile>;
+  source?: string;
   allowCapabilities?: string[];
   allowTools?: string[];
   denyTools?: string[];
   readOnly: boolean;
 }
 
-function readPolicyFile(path: string, required: boolean): { data: unknown; source: string } | undefined {
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf8");
-  } catch (error) {
-    if (!required && (error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw new ToolPolicyError(`Could not read tool policy file at ${path}: ${(error as Error).message}`);
-  }
-  try {
-    return { data: JSON.parse(raw), source: path };
-  } catch (error) {
-    throw new ToolPolicyError(`Tool policy file at ${path} is not valid JSON: ${(error as Error).message}`);
-  }
-}
-
 export function resolveToolPolicy(input: PolicyInput): ToolPolicy {
-  const explicit = input.policyFile !== undefined && input.policyFile.trim() !== "";
-  const path = explicit ? input.policyFile!.trim() : DEFAULT_POLICY_PATH;
-  const loaded = readPolicyFile(path, explicit);
-
-  let file: ReturnType<typeof ToolPolicyFileSchema.parse> = {};
-  if (loaded) {
-    const parsed = ToolPolicyFileSchema.safeParse(loaded.data);
-    if (!parsed.success) {
-      const details = parsed.error.issues.map((issue) => `  - ${issue.path.join(".") || "(root)"}: ${issue.message}`);
-      throw new ToolPolicyError(`Invalid tool policy file at ${path}:\n${details.join("\n")}`);
-    }
-    file = parsed.data;
-  }
+  const file = input.policyData ?? {};
+  const source = input.source ?? "built-in defaults";
 
   const defaults = { ...BUILT_IN_DEFAULTS };
   for (const capability of CAPABILITIES) {
@@ -100,7 +70,7 @@ export function resolveToolPolicy(input: PolicyInput): ToolPolicy {
     ...(input.allowTools?.length ? { allowTools: new Set(input.allowTools) } : {}),
     treatReadModifyWriteAsDestroy: file.treatReadModifyWriteAsDestroy ?? false,
     readOnly: input.readOnly,
-    source: loaded ? loaded.source : "built-in defaults",
+    source,
     mayModify: false,
   };
   policy.mayModify = computeMayModify(policy);
