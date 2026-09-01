@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { getConfig } from "../config.js";
-import { CREATE, MUTATE, READ } from "../framework/annotations.js";
+import { CREATE, DESTROY, EDIT, READ } from "../framework/annotations.js";
 import { defineTool, ToolInputError, type AnyToolDefinition } from "../framework/defineTool.js";
 import {
   AppIdSchema,
@@ -233,13 +233,14 @@ export const cmdbTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_update_ci",
-    title: "Update TeamDynamix Configuration Item",
+    name: "teamdynamix_edit_ci",
+    title: "Edit TeamDynamix Configuration Item",
     description:
-      "Updates a CI, changing only the fields you supply.\n" +
+      "Edits a CI's core fields, changing only the ones you supply.\n" +
       "Uses read-modify-write because TeamDynamix has no PATCH here, so concurrent edits can overwrite each other.",
     input: UpdateInput,
-    annotations: MUTATE,
+    annotations: EDIT,
+    readModifyWrite: true,
     invalidates: CMDB,
     errorHints: ciWriteHints,
     handler: async (args) => {
@@ -261,7 +262,7 @@ export const cmdbTools: AnyToolDefinition[] = [
       const existing = await tdRequest<TdCi>(path);
       return tdRequest<TdCi>(path, { method: "PUT", data: { ...existing, ...changes } });
     },
-    render: (ci) => `# CI Updated\n\n${renderCi(ci)}`,
+    render: (ci) => `# CI Edited\n\n${renderCi(ci)}`,
   }),
 
   defineTool({
@@ -362,7 +363,7 @@ export const cmdbTools: AnyToolDefinition[] = [
     description:
       "Removes a relationship from a CI.\nCall teamdynamix_get_ci_relationships first to find the relationship_id.",
     input: RemoveRelationshipInput,
-    annotations: { ...MUTATE, idempotentHint: true },
+    annotations: { ...DESTROY, idempotentHint: true },
     invalidates: CMDB,
     handler: async (args) => {
       await tdRequest<unknown>(

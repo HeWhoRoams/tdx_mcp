@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { resetConfig } from "../src/config.js";
-import { READ, MUTATE } from "../src/framework/annotations.js";
+import { READ, EDIT } from "../src/framework/annotations.js";
 import { defineTool, registerTools, ToolInputError, type AnyToolDefinition } from "../src/framework/defineTool.js";
 import { ResponseFormat } from "../src/types.js";
 
@@ -54,7 +54,7 @@ const writeTool = defineTool({
   title: "Write Thing",
   description: "Changes a thing.",
   input: Input,
-  annotations: MUTATE,
+  annotations: EDIT,
   handler: async () => ({ ok: true }),
   render: () => "done",
 });
@@ -78,6 +78,8 @@ function setEnv(readOnly: boolean): void {
   process.env.TEAMDYNAMIX_BEID = "b";
   process.env.TEAMDYNAMIX_WS_KEY = "k";
   process.env.TEAMDYNAMIX_READ_ONLY = readOnly ? "true" : "false";
+  // The shipped policy denies the edit tier, which these cases are not testing.
+  process.env.TDX_ALLOW_CAPABILITIES = "read,create,edit,destroy";
   delete process.env.TRANSPORT;
   delete process.env.HOST;
   resetConfig();
@@ -103,6 +105,11 @@ describe("registerTools", () => {
     const captured = register();
     expect(captured.map((entry) => entry.name)).toEqual(["read_thing", "empty_thing", "write_thing", "failing_thing"]);
     expect(tool(captured, "write_thing").config.annotations.readOnlyHint).toBe(false);
+  });
+
+  it("does not leak the internal capability tier into the client annotations", () => {
+    const captured = register();
+    expect(tool(captured, "write_thing").config.annotations).not.toHaveProperty("capability");
   });
 
   it("omits write tools entirely in read-only mode", () => {

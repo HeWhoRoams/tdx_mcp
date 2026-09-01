@@ -142,14 +142,14 @@ async function tierB(appId: number): Promise<void> {
   check("created ticket is readable", before.isError !== true);
 
   const newTitle = `[MCP TEST] renamed ${Date.now()}`;
-  const updated = await call("teamdynamix_update_ticket", {
+  const updated = await call("teamdynamix_edit_ticket", {
     app_id: appId,
     ticket_id: ticket.ID,
     title: newTitle,
     notify_responsible: false,
     response_format: "json",
   });
-  check("ticket updated", updated.isError !== true, text(updated));
+  check("ticket edited", updated.isError !== true, text(updated));
 
   const after = await call("teamdynamix_get_ticket", readArgs);
   const afterTitle = (after.structuredContent as { Title?: string } | undefined)?.Title;
@@ -178,7 +178,7 @@ async function tierB(appId: number): Promise<void> {
   const raceTitle = `[MCP TEST] race ${Date.now()}`;
   await Promise.all([
     call("teamdynamix_get_ticket", readArgs),
-    call("teamdynamix_update_ticket", {
+    call("teamdynamix_edit_ticket", {
       app_id: appId,
       ticket_id: ticket.ID,
       title: raceTitle,
@@ -192,7 +192,7 @@ async function tierB(appId: number): Promise<void> {
 
   const cancelled = statusList.find((status) => /cancel|closed/i.test(status.Name));
   if (cancelled) {
-    const closing = await call("teamdynamix_update_ticket", {
+    const closing = await call("teamdynamix_edit_ticket", {
       app_id: appId,
       ticket_id: ticket.ID,
       status_id: cancelled.ID,
@@ -225,6 +225,13 @@ async function run(): Promise<void> {
   }
   if (config.readOnly) {
     console.error("Refusing to run: TEAMDYNAMIX_READ_ONLY=true, so write tools are not registered.");
+    process.exit(1);
+  }
+  if (config.toolPolicy.defaults.edit !== "allow") {
+    console.error(
+      "Refusing to run: the tool policy denies the edit tier, so teamdynamix_edit_ticket is not registered. " +
+        "Set TDX_ALLOW_CAPABILITIES=read,create,edit,destroy for this run."
+    );
     process.exit(1);
   }
 

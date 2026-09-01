@@ -9,6 +9,9 @@ import { getReferenceCache, getRecordCache } from "./cache.js";
 
 export class TeamDynamixAuthError extends Error {}
 
+/** A request that the tool policy forbids reached the transport anyway. */
+export class TeamDynamixPolicyError extends Error {}
+
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 /** Reference data is stable and never purged by writes; records are short-lived and are. */
@@ -181,6 +184,14 @@ export class TeamDynamixClient {
     const caching = Boolean(cacheKey) && cacheTtlMs > 0;
     const cache = cacheTier === "record" ? getRecordCache() : getReferenceCache();
 
+    // Backstop for a mis-annotated tool. POST is ambiguous (TD searches are POSTs)
+    // but these verbs only ever change an existing record.
+    if (!getConfig().toolPolicy.mayModify && (method === "PATCH" || method === "PUT" || method === "DELETE")) {
+      throw new TeamDynamixPolicyError(
+        `This server's tool policy permits no record changes, so ${method} ${path} was blocked.`
+      );
+    }
+
     if (caching) {
       const entry = cache.getAllowStale(cacheKey!);
       if (entry && !entry.stale) {
@@ -347,6 +358,9 @@ export async function tdRequest<T>(endpoint: string, options: RequestOptions = {
  */
 export function handleApiError(error: unknown): string {
   if (error instanceof TeamDynamixAuthError) {
+    return `Error: ${error.message}`;
+  }
+  if (error instanceof TeamDynamixPolicyError) {
     return `Error: ${error.message}`;
   }
   if (error instanceof AxiosError) {

@@ -11,8 +11,9 @@ npm run build        # tsc → dist/
 npm test             # vitest unit suite (no network)
 npm run test:mcp     # protocol handshakes over stdio + authenticated HTTP
 npm run test:all     # unit + script type-check + protocol test
-npm run bench        # latency benchmark; accepts -- --app-id <ID>
-npm run dev          # tsx watch (no build needed)
+npm run bench       # latency benchmark; accepts -- --app-id <ID>
+npm run policy:sync # rewrite config/tool-policy.json from the current tool catalog
+npm run dev         # tsx watch (no build needed)
 npm start            # stdio transport (default)
 npm run start:http   # Streamable HTTP on 127.0.0.1:3000
 npx @modelcontextprotocol/inspector node dist/index.js  # interactive testing
@@ -30,7 +31,10 @@ src/
 ├── constants.ts      # CHARACTER_LIMIT, pagination defaults, MAX_SEARCH_FETCH
 ├── framework/
 │   ├── defineTool.ts # Tool contract: format policy, error mapping, truncation, invalidation, timing
-│   └── annotations.ts# READ / CREATE / MUTATE presets
+│   └── annotations.ts# READ / CREATE / EDIT / DESTROY capability presets
+├── policy/
+│   ├── index.ts      # Policy resolution: which tools may register and run
+│   └── schema.ts     # Zod schema for config/tool-policy.json
 ├── schemas/
 │   └── common.ts     # AppIdSchema, PagingShape, AttributesSchema, ResponseFormatSchema
 ├── services/
@@ -45,15 +49,16 @@ src/
 ├── prompts/          # triage_ticket, weekly_ticket_report
 └── tools/            # One file per domain, each exporting an array of tool definitions
     ├── auth.ts
-    ├── tickets.ts    # search, get, create, update, feed, tasks (get/create/update)
-    ├── assets.ts     # search, get, create, update, feed
-    ├── cmdb.ts       # search, get, create, update, feed, relationships, link to ticket
+    ├── tickets.ts    # search, get, create, edit, feed, tasks (get/create/edit)
+    ├── assets.ts     # search, get, create, edit, feed
+    ├── cmdb.ts       # search, get, create, edit, feed, relationships, link to ticket
     ├── projects.ts
     ├── issues.ts
     ├── people.ts     # lookup, search, get, UID by username, groups
     ├── reference.ts  # all list_* lookup tools (cached)
     └── reports.ts    # list reports, get report data, list/run saved searches
 test/                # vitest unit suite
+config/              # tool-policy.json + tool-policy.schema.json
 archive/             # pre-2.0 implementation, kept for reference only (not compiled)
 ```
 
@@ -62,15 +67,19 @@ archive/             # pre-2.0 implementation, kept for reference only (not comp
 1. Add a `defineTool({...})` entry to the relevant `src/tools/*.ts` array.
 2. Build the input schema with `.strict()`, reusing `AppIdSchema`, `PagingShape`, `AttributesSchema`, and `ResponseFormatSchema` from `schemas/common.ts`.
 3. Keep `description` to three lines or fewer — argument docs belong in schema `.describe()`.
-4. Pick annotations from `framework/annotations.ts` (`READ`, `CREATE`, `MUTATE`).
+4. Pick annotations from `framework/annotations.ts` (`READ`, `CREATE`, `EDIT`, `DESTROY`) — the tier decides whether a deployment may run the tool at all.
 5. `handler` returns a plain object (wrap arrays with `items()`); `render` turns it into markdown. Never build `content`/`structuredContent` yourself — the framework owns response shape, truncation, and error mapping.
 6. For searches call `searchPage()` so caching, cursors, and the fetch cap apply.
 7. Write tools that change records should set `invalidates: { domain, appIdFrom }` so cached searches are purged.
 8. Throw `ToolInputError` for argument problems detectable before calling TeamDynamix.
-9. Add the tool to the exported array; `index.ts` needs no change unless you add a new domain file.
+9. Add the tool to the exported array; `index.ts` needs no change unless you add a new domain file (which also needs a `withDomain` entry and a `TOOL_DOMAINS` member).
+10. Run `npm run policy:sync` so `config/tool-policy.json` lists the new tool. A unit test fails if it drifts.
 
 ## Key Conventions
 
+- **Capability tiers gate every tool.** `read` changes nothing, `create` adds new data, `edit` overwrites fields on an existing record, `destroy` deletes or unlinks. `edit` and `destroy` are denied by default. The split follows TeamDynamix's own vocabulary: posting to a feed is an *update* (`create` tier, `teamdynamix_add_ticket_comment`), while writing a record's fields is an *edit* (`teamdynamix_edit_ticket`). Never name a field-writing tool `update_*`.
+- **Policy precedence**: `TDX_DENY_TOOLS` > `TDX_ALLOW_TOOLS` > `tools` > `domains` > `defaults`, with `TEAMDYNAMIX_READ_ONLY=true` overriding all of it. A rule of `"inherit"` falls through. `registerTools` filters on this, and the handler re-checks before running, so a denied tool is neither discoverable nor invocable. An invalid policy file is a startup failure — never a permissive fallback.
+- **Mark read-modify-write tools.** Where TeamDynamix has no PATCH, the tool GETs the record and writes it back, so a concurrent change is lost. Set `readModifyWrite: true` on those definitions; deployments can have the policy treat them as `destroy`.
 - **`app_id` is optional when a default is configured.** `TEAMDYNAMIX_DEFAULT_APP_ID` supplies it; tools call `resolveAppId(args.app_id)` from `services/context.ts` rather than reading `args.app_id` directly. Without an explicit value or a default, the tool throws a `ToolInputError` pointing at `teamdynamix_list_applications`.
 - **`/applications` is shaped differently from other reference data**: it returns `AppID`/`Type`/`Active`, not `ID`/`IsActive`. Use the `TdApp` type; do not route it through `renderNamedList`.
 - **Person arguments accept emails.** Use `resolvePersonUid` / `resolvePersonUids` from `services/context.ts` for any UID argument so agents can pass the identifiers humans actually use.
@@ -89,8 +98,8 @@ archive/             # pre-2.0 implementation, kept for reference only (not comp
 - **Error hints**: write tools may define `errorHints` to append valid IDs to a 400. These read cache only — never add a network call to the failure path.
 - **Search window**: TeamDynamix search has no offset parameter, so paging is client-side and fetches are capped at `MAX_SEARCH_FETCH` (251). Past that, steer agents to saved searches or reports.
 - **Rate limits**: a sliding-window limiter (`TEAMDYNAMIX_RATE_LIMIT`/`TEAMDYNAMIX_RATE_WINDOW_MS`, default 30/60 s) queues outgoing calls to stay under TD's per-IP quota. That quota is shared across processes, so a 429 gets its own retry budget (`TEAMDYNAMIX_MAX_RATE_LIMIT_WAITS`) and honors `Retry-After` up to `TEAMDYNAMIX_MAX_RETRY_DELAY_MS`; 503s use `TEAMDYNAMIX_MAX_RETRIES`.
-- **Entry point**: `src/server.ts` builds the `McpServer`; `src/index.ts` only selects a transport and starts it. Import `createServer` from `server.js` (importing `index.js` starts the server). Tool arrays are aggregated in `src/tools/index.ts`.
-- **Config**: every environment variable is parsed and validated once in `src/config.ts`. Do not read `process.env` anywhere else.
+- **Entry point**: `src/server.ts` builds the `McpServer`; `src/index.ts` only selects a transport and starts it. Import `createServer` from `server.js` (importing `index.js` starts the server). Tool arrays are aggregated and domain-tagged in `src/tools/index.ts`.
+- **Config**: every environment variable is parsed and validated once in `src/config.ts`. Do not read `process.env` anywhere else. `src/policy/index.ts` stays pure — it receives already-parsed values so it can be unit-tested without the environment.
 - **Logging**: use `logger` from `services/logger.ts`. stdout is reserved for the stdio transport, so never `console.log` in server code.
 - **Reports**: `teamdynamix_get_report` (with `with_data=true`) and `teamdynamix_run_saved_search` are the most powerful read operations for complex queries — prefer these over chaining many search calls.
 

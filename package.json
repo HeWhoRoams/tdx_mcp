@@ -19,6 +19,7 @@
     "test:url": "tsx scripts/url-resolution-test.ts",
     "test:mcp": "npm run build && tsx scripts/mcp-protocol-test.ts",
     "test:all": "npm run test && npm run check:scripts && npm run test:mcp",
+    "policy:sync": "tsx scripts/sync-tool-policy.ts",
     "bench": "tsx scripts/bench.ts",
     "measure:window": "tsx scripts/measure-window.ts",
     "verify": "tsx scripts/verify-connection.ts",

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { resolveToolPolicy, ToolPolicyError, type ToolPolicy } from "./policy/index.js";
 
 /**
  * Single source of truth for environment configuration. Parsed and validated
@@ -29,6 +30,11 @@ const RawEnvSchema = z.object({
   TEAMDYNAMIX_AUTH_METHOD: z.enum(["user", "admin"]).optional(),
   TEAMDYNAMIX_READ_ONLY: BooleanFromEnv,
   TEAMDYNAMIX_TOKEN_CACHE: z.enum(["memory", "file"]).default("memory"),
+
+  TDX_TOOL_POLICY_FILE: z.string().optional(),
+  TDX_ALLOW_CAPABILITIES: z.string().optional(),
+  TDX_ALLOW_TOOLS: z.string().optional(),
+  TDX_DENY_TOOLS: z.string().optional(),
 
   TEAMDYNAMIX_TIMEOUT_MS: IntFromEnv(15_000, 1_000, 300_000),
   TEAMDYNAMIX_MAX_SOCKETS: IntFromEnv(8, 1, 128),
@@ -69,6 +75,8 @@ export interface Config {
     | { method: "user"; username: string; password: string };
   authCacheKey: string;
   readOnly: boolean;
+  /** Which tools may be registered and invoked; see src/policy. */
+  toolPolicy: ToolPolicy;
   tokenCache: "memory" | "file";
   http: {
     timeoutMs: number;
@@ -172,6 +180,20 @@ function buildConfig(env: NodeJS.ProcessEnv): Config {
     );
   }
 
+  let toolPolicy: ToolPolicy;
+  try {
+    toolPolicy = resolveToolPolicy({
+      ...(raw.TDX_TOOL_POLICY_FILE ? { policyFile: raw.TDX_TOOL_POLICY_FILE } : {}),
+      allowCapabilities: splitList(raw.TDX_ALLOW_CAPABILITIES),
+      allowTools: splitList(raw.TDX_ALLOW_TOOLS),
+      denyTools: splitList(raw.TDX_DENY_TOOLS),
+      readOnly: raw.TEAMDYNAMIX_READ_ONLY,
+    });
+  } catch (error) {
+    if (error instanceof ToolPolicyError) throw new ConfigError(error.message);
+    throw error;
+  }
+
   return {
     baseUrl: raw.TEAMDYNAMIX_BASE_URL,
     apiBaseUrl: resolveApiBaseUrl(raw.TEAMDYNAMIX_BASE_URL),
@@ -179,6 +201,7 @@ function buildConfig(env: NodeJS.ProcessEnv): Config {
     auth,
     authCacheKey: auth.method === "admin" ? `admin:${auth.beid}` : `user:${auth.username}`,
     readOnly: raw.TEAMDYNAMIX_READ_ONLY,
+    toolPolicy,
     tokenCache: raw.TEAMDYNAMIX_TOKEN_CACHE,
     http: {
       timeoutMs: raw.TEAMDYNAMIX_TIMEOUT_MS,

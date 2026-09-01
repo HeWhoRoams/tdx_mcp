@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { getConfig } from "../config.js";
-import { CREATE, MUTATE, READ } from "../framework/annotations.js";
+import { CREATE, EDIT, READ } from "../framework/annotations.js";
 import { defineTool, ToolInputError, type AnyToolDefinition } from "../framework/defineTool.js";
 import { ChildPagingShape, PagingShape, PersonRefSchema, ResponseFormatSchema, sortBySchema } from "../schemas/common.js";
 import { tdRequest } from "../services/client.js";
@@ -152,11 +152,11 @@ export const projectTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_update_project",
-    title: "Update TeamDynamix Project",
-    description: "Patches a project, changing only the fields you supply.\nAt least one updatable field is required.",
+    name: "teamdynamix_edit_project",
+    title: "Edit TeamDynamix Project",
+    description: "Edits a project's core fields, changing only the ones you supply.\nAt least one editable field is required.",
     input: UpdateInput,
-    annotations: MUTATE,
+    annotations: EDIT,
     invalidates: PROJECTS,
     handler: async (args) => {
       const operations: Array<{ op: "replace"; path: string; value: unknown }> = [];
@@ -179,7 +179,7 @@ export const projectTools: AnyToolDefinition[] = [
       }
       return tdRequest<TdProject>(`/projects/${args.project_id}`, { method: "PATCH", data: operations });
     },
-    render: (project) => `# Project Updated\n\n${renderProject(project)}`,
+    render: (project) => `# Project Edited\n\n${renderProject(project)}`,
   }),
 
   defineTool({
