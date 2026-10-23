@@ -4,6 +4,7 @@ import {
   loginSsoUrl,
   SsoLoginError,
 } from "../auth/sso-login.js";
+import type { SignOutResult } from "../auth/sso-lifecycle.js";
 import { buildSsoLifecycle } from "../auth/sso-composition.js";
 import { getConfig } from "../config.js";
 import type { StoredToken } from "../services/token-store.js";
@@ -42,6 +43,13 @@ function describe(stored: StoredToken, apiBaseUrl: string): string {
   return (
     `${stored.fullName ?? "unknown user"} <${stored.email ?? stored.username ?? "?"}> (UID ${stored.uid ?? "?"}) ` +
     `on ${environmentLabel(apiBaseUrl)}; token expires ${new Date(stored.expiresAtMs).toLocaleString()} (${left})`
+  );
+}
+
+export function describeSignOut(label: string, result: SignOutResult): string {
+  return (
+    `Signed out of ${label}${result.removedLocalProfile ? " and removed the login browser profile" : ""}.\n` +
+    (result.operatorAction ? `${result.operatorAction}\n` : "")
   );
 }
 
@@ -89,8 +97,7 @@ export async function runAuthCli(command: string, args: string[]): Promise<numbe
     }
 
     if (command === "logout") {
-      lifecycle.signOut(args.includes("--all"));
-      process.stdout.write(`Signed out of ${environmentLabel(apiBaseUrl)}${args.includes("--all") && config.auth.deployment === "local" ? " and removed the login browser profile" : ""}.\n`);
+      process.stdout.write(describeSignOut(environmentLabel(apiBaseUrl), lifecycle.signOut(args.includes("--all"))));
       return 0;
     }
   } catch (error) {

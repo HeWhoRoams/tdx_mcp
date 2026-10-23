@@ -9,7 +9,7 @@ import { browserProfileDir, ssoTokenPath } from "./paths.js";
 import { openHermesCdpBrowserSession } from "./hermes-cdp-browser.js";
 import { openLocalBrowserSession, type SsoBrowserSession } from "./sso-browser.js";
 import { buildStoredToken, decodeJwtClaims, ssoLoginRequiredMessage, SsoLoginError, SsoPolicyError } from "./sso-login.js";
-import { isRetryable, SsoActionRequiredError, SsoUnavailableError } from "./sso-errors.js";
+import { isRetryable, SsoActionRequiredError, SsoRenewalDiscardedError, SsoUnavailableError } from "./sso-errors.js";
 import { SsoRenewalManager } from "./sso-renewal.js";
 import {
   CredentialState,
@@ -44,6 +44,12 @@ export type SsoAuditEvent =
   | "state_migrated"
   | "state_migration_skipped"
   | "logout";
+
+/** What a sign-out did, so callers can tell the person what is still theirs to do. */
+export interface SignOutResult {
+  removedLocalProfile: boolean;
+  operatorAction?: string;
+}
 
 /** What TeamDynamix said about a token it just answered 401 for. */
 export type UnauthorizedVerdict = "permission-denied" | "expired" | "revoked" | "unknown";
@@ -91,6 +97,7 @@ function defaultProbe(apiBaseUrl: string): SsoProbe {
 /** Deep lifecycle module for one realm and Expected user. */
 export class SsoLifecycle implements SsoAuthorization {
   private readonly issued = new Map<string, string>();
+  private readonly renewalLock: RealmLock | undefined;
   private readonly renewal: SsoRenewalManager;
   private readonly auth: Extract<Config["auth"], { method: "sso" }>;
   private readonly config: Config;
@@ -118,6 +125,7 @@ export class SsoLifecycle implements SsoAuthorization {
         ? new FileStatePersistence(store.statePath, store.legacyMarkerPath)
         : new MemoryStatePersistence());
     const fileStore = store instanceof SsoTokenStore ? store : undefined;
+    this.renewalLock = fileStore ? new RealmLock(fileStore.renewLockPath) : undefined;
     this.state = new CredentialState(
       store,
       persistence,
@@ -127,7 +135,7 @@ export class SsoLifecycle implements SsoAuthorization {
     this.auth = config.auth as Extract<Config["auth"], { method: "sso" }>;
     this.renewal = new SsoRenewalManager({
       state: this.state,
-      ...(fileStore ? { renewalLock: new RealmLock(fileStore.renewLockPath) } : {}),
+      ...(this.renewalLock ? { renewalLock: this.renewalLock } : {}),
       leadMs: this.auth.renewLeadMs,
       retries: this.auth.renewRetries,
       now: this.now,
@@ -180,6 +188,35 @@ export class SsoLifecycle implements SsoAuthorization {
       if (error instanceof SsoUnavailableError) throw error;
       const hint = ssoLoginRequiredMessage(this.config.apiBaseUrl, this.state.currentToken());
       throw new SsoActionRequiredError(`${hint} ${error instanceof Error ? error.message : ""}`.trim());
+    }
+  }
+
+  /**
+   * Compatibility gate only: renews now, ignoring token freshness, but still through the renewal
+   * lock, identity validation and the epoch check, so it can never do what a real renewal may not.
+   */
+  async forceRenewal(): Promise<{ uid?: string; expiresAtMs: number; fingerprint: string }> {
+    const release = this.renewalLock?.tryAcquire();
+    if (this.renewalLock && !release) throw new SsoUnavailableError("Another process is renewing the sign-in.");
+    try {
+      const epochAtStart = this.state.epoch();
+      const previous = this.state.currentToken();
+      const session = await this.openSession({ interactive: false });
+      let minted: string;
+      try {
+        minted = await session.mintToken();
+      } finally {
+        await session.close();
+      }
+      const stored = await this.validate(minted, previous, true);
+      if (!this.state.commitRenewal(stored, epochAtStart)) throw new SsoRenewalDiscardedError();
+      return {
+        ...(stored.uid ? { uid: stored.uid } : {}),
+        expiresAtMs: stored.expiresAtMs,
+        fingerprint: createHash("sha256").update(stored.token).digest("hex").slice(0, 16),
+      };
+    } finally {
+      release?.();
     }
   }
 
@@ -270,14 +307,20 @@ export class SsoLifecycle implements SsoAuthorization {
     return stored;
   }
 
-  signOut(full = false): void {
+  signOut(full = false): SignOutResult {
     this.stop();
     this.state.signOut();
     this.lastProbeOk = undefined;
-    if (full && this.auth.deployment === "local") {
-      rmSync(browserProfileDir(this.binding), { recursive: true, force: true });
-    }
+    const removedLocalProfile = full && this.auth.deployment === "local";
+    if (removedLocalProfile) rmSync(browserProfileDir(this.binding), { recursive: true, force: true });
     this.audit("logout", { full, deployment: this.auth.deployment });
+    // In an external deployment the IdP session lives in a browser we do not own, so we cannot end it.
+    return {
+      removedLocalProfile,
+      ...(full && this.auth.deployment === "external"
+        ? { operatorAction: "Ask the Hermes operator to sign the workspace browser out of CMU SSO; this server cannot." }
+        : {}),
+    };
   }
 
   private async validate(token: string, previous: StoredToken | undefined, renewal: boolean): Promise<StoredToken> {

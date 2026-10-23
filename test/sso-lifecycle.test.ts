@@ -150,3 +150,50 @@ describe("identity", () => {
     expect(audit).toHaveBeenCalledWith("identity_changed", { fromUid: "u1", toUid: "u2" });
   });
 });
+
+describe("signOut", () => {
+  it("reports what it removed locally, and asks the operator when the browser is external", async () => {
+    const { describeSignOut } = await import("../src/cli/auth-cli.js");
+    const { lifecycle, store } = setup();
+    store.write(stored(jwt(7200), 7200));
+    const local = lifecycle.signOut(true);
+    expect(local).toEqual({ removedLocalProfile: true });
+    expect(store.read()).toBeUndefined();
+    expect(describeSignOut("sandbox", local)).toMatch(/removed the login browser profile/);
+
+    process.env.TEAMDYNAMIX_MCP_DEPLOYMENT = "external";
+    process.env.TEAMDYNAMIX_SSO_EXPECTED_USER = "me@x.edu";
+    process.env.TEAMDYNAMIX_SSO_CDP_ENDPOINT = "http://127.0.0.1:9222";
+    process.env.TRANSPORT = "http";
+    process.env.HOST = "127.0.0.1";
+    process.env.MCP_AUTH_TOKEN = "t";
+    try {
+      resetConfig();
+      const external = createSsoLifecycle(getConfig(), new SsoTokenStore(ssoTokenPath(bindingOf(getConfig().apiBaseUrl, "me@x.edu"))), () => undefined);
+      const result = external.signOut(true);
+      expect(result.removedLocalProfile).toBe(false);
+      expect(result.operatorAction).toMatch(/Hermes operator/);
+      expect(describeSignOut("sandbox", result)).toMatch(/Hermes operator/);
+      expect(external.signOut(false).operatorAction).toBeUndefined();
+    } finally {
+      for (const key of ["TEAMDYNAMIX_MCP_DEPLOYMENT", "TEAMDYNAMIX_SSO_EXPECTED_USER", "TEAMDYNAMIX_SSO_CDP_ENDPOINT", "TRANSPORT", "HOST", "MCP_AUTH_TOKEN"]) delete process.env[key];
+    }
+  });
+});
+
+describe("forceRenewal (compatibility gate)", () => {
+  it("renews even when the token is fresh, and still refuses a different user", async () => {
+    const first = jwt(7200);
+    const { lifecycle, store } = setup({ openRenewalSession: async () => ({ mintToken: async () => first, close: async () => undefined }) });
+    store.write(stored(jwt(7200 * 3), 7200 * 3, "u1")); // far from expiry: a normal renewal would not run
+    mockGetUser("u1");
+    const result = await lifecycle.forceRenewal();
+    expect(result).toMatchObject({ uid: "u1" });
+    expect(result.fingerprint).toMatch(/^[0-9a-f]{16}$/);
+    expect(store.read()?.token).toBe(first);
+
+    mockGetUser("u2");
+    await expect(lifecycle.forceRenewal()).rejects.toThrow(/different TeamDynamix user/);
+    expect(store.read()?.uid).toBe("u1");
+  });
+});
