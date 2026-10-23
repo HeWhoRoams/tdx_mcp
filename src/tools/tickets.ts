@@ -60,14 +60,25 @@ const CreateInput = z
     title: z.string().min(1).max(500).describe("The ticket title/subject."),
     description: z.string().max(50000).optional().describe("The ticket's initial description/body."),
     type_id: z.number().int().positive().describe("The TicketType ID (see teamdynamix_list_ticket_types)."),
+    form_id: z.number().int().positive().optional().describe("The TicketForm ID (see teamdynamix_list_ticket_forms). Determines which custom attributes apply, e.g. Change Request's Business Purpose/Testing Plan/Backout Plan fields."),
     status_id: z.number().int().positive().optional().describe("Initial TicketStatus ID; defaults to the type's default status."),
     priority_id: z.number().int().positive().optional().describe("The TicketPriority ID (see teamdynamix_list_ticket_priorities)."),
+    impact_id: z.number().int().positive().optional().describe("The TicketImpact ID (see teamdynamix_list_ticket_impacts)."),
+    urgency_id: z.number().int().positive().optional().describe("The TicketUrgency ID (see teamdynamix_list_ticket_urgencies)."),
     account_id: z.number().int().positive().optional().describe("The requesting Account/Department ID."),
     source_id: z.number().int().positive().optional().describe("The TicketSource ID (see teamdynamix_list_ticket_sources)."),
+    service_id: z.number().int().positive().optional().describe("The Service Catalog service ID this ticket is for."),
+    service_offering_id: z.number().int().positive().optional().describe("The Service Offering ID under service_id, if applicable."),
+    start_date: z.string().optional().describe("ISO 8601 planned start date/time for the ticket, e.g. a Change's scheduled cutover."),
+    end_date: z.string().optional().describe("ISO 8601 planned end date/time for the ticket."),
+    location_id: z.number().int().positive().optional().describe("Location ID (see teamdynamix_list_locations)."),
+    location_room_id: z.number().int().positive().optional().describe("Room ID within location_id."),
     requestor_email: z.string().email().optional().describe("Email of the requestor. Provide this or requestor_uid."),
     requestor_uid: PersonRefSchema("The requestor").optional(),
     responsible_uid: PersonRefSchema("The person to assign as responsible").optional(),
     responsible_group_id: z.number().int().positive().optional().describe("Group ID to assign as responsible."),
+    reviewer_uid: PersonRefSchema("The person to assign as reviewer").optional(),
+    reviewing_group_id: z.number().int().positive().optional().describe("Group ID to assign as reviewer, e.g. IT Helpdesk for Incident tickets or a CAB group for Change tickets."),
     notify_requestor: z.boolean().default(false).describe("Email the requestor about ticket creation."),
     notify_responsible: z.boolean().default(false).describe("Email the newly-responsible resource(s)."),
     custom_attributes: AttributesSchema,
@@ -83,8 +94,21 @@ const UpdateInput = z
     description: z.string().max(50000).optional().describe("New description."),
     status_id: z.number().int().positive().optional().describe("New TicketStatus ID."),
     priority_id: z.number().int().positive().optional().describe("New TicketPriority ID."),
+    impact_id: z.number().int().positive().optional().describe("New TicketImpact ID (see teamdynamix_list_ticket_impacts)."),
+    urgency_id: z.number().int().positive().optional().describe("New TicketUrgency ID (see teamdynamix_list_ticket_urgencies)."),
+    account_id: z.number().int().positive().optional().describe("New requesting Account/Department ID."),
+    source_id: z.number().int().positive().optional().describe("New TicketSource ID (see teamdynamix_list_ticket_sources)."),
+    service_id: z.number().int().positive().optional().describe("New Service Catalog service ID."),
+    service_offering_id: z.number().int().positive().optional().describe("New Service Offering ID under service_id, if applicable."),
+    start_date: z.string().optional().describe("New ISO 8601 planned start date/time for the ticket."),
+    end_date: z.string().optional().describe("New ISO 8601 planned end date/time for the ticket."),
+    location_id: z.number().int().positive().optional().describe("New Location ID (see teamdynamix_list_locations)."),
+    location_room_id: z.number().int().positive().optional().describe("New Room ID within location_id."),
+    requestor_uid: PersonRefSchema("The new requestor").optional(),
     responsible_uid: PersonRefSchema("The new responsible person").optional(),
     responsible_group_id: z.number().int().positive().optional().describe("New responsible group ID."),
+    reviewer_uid: PersonRefSchema("The new reviewer").optional(),
+    reviewing_group_id: z.number().int().positive().optional().describe("New reviewing group ID."),
     notify_responsible: z.boolean().default(false).describe("Notify the newly-responsible resource(s)."),
     custom_attributes: AttributesSchema,
     response_format: ResponseFormatSchema,
@@ -140,13 +164,23 @@ export function renderTicket(ticket: TdTicket, appId: number): string {
     `- **Status**: ${nameWithId(ticket.StatusName, ticket.StatusID)}`,
     `- **Type**: ${nameWithId(ticket.Type as string | undefined, ticket.TypeID)}`,
     `- **Priority**: ${nameWithId(ticket.PriorityName, ticket.PriorityID)}`,
+  ];
+  if (ticket.ImpactID || ticket.ImpactName) lines.push(`- **Impact**: ${nameWithId(ticket.ImpactName, ticket.ImpactID)}`);
+  if (ticket.UrgencyID || ticket.UrgencyName) lines.push(`- **Urgency**: ${nameWithId(ticket.UrgencyName, ticket.UrgencyID)}`);
+  if (ticket.ServiceID || ticket.ServiceName) lines.push(`- **Service**: ${nameWithId(ticket.ServiceName, ticket.ServiceID)}`);
+  lines.push(
     `- **Account/Dept**: ${nameWithId(ticket.AccountName, ticket.AccountID)}`,
     `- **Requestor**: ${ticket.RequestorName ?? "N/A"}${ticket.RequestorEmail ? ` <${ticket.RequestorEmail}>` : ""}`,
-    `- **Responsible**: ${ticket.ResponsibleFullName ?? ticket.ResponsibleGroupName ?? "Unassigned"}`,
+    `- **Responsible**: ${ticket.ResponsibleFullName ?? ticket.ResponsibleGroupName ?? "Unassigned"}`
+  );
+  if (ticket.ReviewerFullName || ticket.ReviewingGroupName) {
+    lines.push(`- **Reviewer**: ${ticket.ReviewerFullName ?? ticket.ReviewingGroupName ?? "N/A"}`);
+  }
+  lines.push(
     `- **Created**: ${formatDate(ticket.CreatedDate)}`,
     `- **Modified**: ${formatDate(ticket.ModifiedDate)}`,
-    `- **Link**: ${ticketUrl(appId, ticket.ID)}`,
-  ];
+    `- **Link**: ${ticketUrl(appId, ticket.ID)}`
+  );
   if (ticket.Description) {
     const description = String(ticket.Description);
     lines.push(`- **Description**: ${description.length > 500 ? `${description.slice(0, 500)}...` : description}`);
@@ -170,7 +204,9 @@ function ticketWriteHints(args: { app_id?: number }): string | undefined {
   return combineHints(
     referenceHint(appId, "tickets/statuses", "status_id values"),
     referenceHint(appId, "tickets/types", "type_id values"),
-    referenceHint(appId, "tickets/priorities", "priority_id values")
+    referenceHint(appId, "tickets/priorities", "priority_id values"),
+    referenceHint(appId, "tickets/impacts", "impact_id values"),
+    referenceHint(appId, "tickets/urgencies", "urgency_id values")
   );
 }
 
@@ -249,8 +285,9 @@ export const ticketTools: AnyToolDefinition[] = [
     title: "Create TeamDynamix Ticket",
     description:
       "Creates a ticket. Requires title and type_id.\n" +
-      "Look up type_id/status_id/priority_id with the teamdynamix_list_ticket_* tools first.\n" +
-      "Requestor and assignee accept email addresses as well as UIDs.",
+      "Look up type_id/status_id/priority_id/impact_id/urgency_id/form_id/source_id with the teamdynamix_list_ticket_* tools first, " +
+      "and location_id with teamdynamix_list_locations.\n" +
+      "Requestor, assignee, and reviewer accept email addresses as well as UIDs.",
     input: CreateInput,
     annotations: CREATE,
     invalidates: TICKETS,
@@ -258,14 +295,25 @@ export const ticketTools: AnyToolDefinition[] = [
     handler: async (args) => {
       const body: Record<string, unknown> = { Title: args.title, TypeID: args.type_id };
       if (args.description) body.Description = args.description;
+      if (args.form_id) body.FormID = args.form_id;
       if (args.status_id) body.StatusID = args.status_id;
       if (args.priority_id) body.PriorityID = args.priority_id;
+      if (args.impact_id) body.ImpactID = args.impact_id;
+      if (args.urgency_id) body.UrgencyID = args.urgency_id;
       if (args.account_id) body.AccountID = args.account_id;
       if (args.source_id) body.SourceID = args.source_id;
+      if (args.service_id) body.ServiceID = args.service_id;
+      if (args.service_offering_id) body.ServiceOfferingID = args.service_offering_id;
+      if (args.start_date) body.StartDate = args.start_date;
+      if (args.end_date) body.EndDate = args.end_date;
+      if (args.location_id) body.LocationID = args.location_id;
+      if (args.location_room_id) body.LocationRoomID = args.location_room_id;
       if (args.requestor_email) body.RequestorEmail = args.requestor_email;
       if (args.requestor_uid) body.RequestorUid = await resolvePersonUid(args.requestor_uid);
       if (args.responsible_uid) body.ResponsibleUid = await resolvePersonUid(args.responsible_uid);
       if (args.responsible_group_id) body.ResponsibleGroupID = args.responsible_group_id;
+      if (args.reviewer_uid) body.ReviewerUid = await resolvePersonUid(args.reviewer_uid);
+      if (args.reviewing_group_id) body.ReviewingGroupID = args.reviewing_group_id;
       if (args.custom_attributes) body.Attributes = args.custom_attributes;
       return tdRequest<TdTicket>(`/${resolveAppId(args.app_id)}/tickets`, {
         method: "POST",
@@ -295,12 +343,27 @@ export const ticketTools: AnyToolDefinition[] = [
       add("/Description", args.description);
       add("/StatusID", args.status_id);
       add("/PriorityID", args.priority_id);
+      add("/ImpactID", args.impact_id);
+      add("/UrgencyID", args.urgency_id);
+      add("/AccountID", args.account_id);
+      add("/SourceID", args.source_id);
+      add("/ServiceID", args.service_id);
+      add("/ServiceOfferingID", args.service_offering_id);
+      add("/StartDate", args.start_date);
+      add("/EndDate", args.end_date);
+      add("/LocationID", args.location_id);
+      add("/LocationRoomID", args.location_room_id);
+      add("/RequestorUid", args.requestor_uid ? await resolvePersonUid(args.requestor_uid) : undefined);
       add("/ResponsibleUid", args.responsible_uid ? await resolvePersonUid(args.responsible_uid) : undefined);
       add("/ResponsibleGroupID", args.responsible_group_id);
+      add("/ReviewerUid", args.reviewer_uid ? await resolvePersonUid(args.reviewer_uid) : undefined);
+      add("/ReviewingGroupID", args.reviewing_group_id);
       add("/Attributes", args.custom_attributes);
       if (operations.length === 0) {
         throw new ToolInputError(
-          "At least one field to update must be provided (title, description, status_id, priority_id, responsible_uid, responsible_group_id, or custom_attributes)."
+          "At least one field to update must be provided (title, description, status_id, priority_id, impact_id, urgency_id, " +
+            "account_id, source_id, service_id, service_offering_id, start_date, end_date, location_id, location_room_id, " +
+            "requestor_uid, responsible_uid, responsible_group_id, reviewer_uid, reviewing_group_id, or custom_attributes)."
         );
       }
       return tdRequest<TdTicket>(`/${resolveAppId(args.app_id)}/tickets/${args.ticket_id}`, {
