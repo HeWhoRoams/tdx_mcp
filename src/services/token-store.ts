@@ -101,7 +101,8 @@ class FileTokenStore implements TokenStore {
  */
 export class SsoTokenStore implements TokenStore {
   private current: StoredToken | undefined;
-  private seenMtimeMs = -1;
+  /** mtime, inode and size together: a replaced file is noticed even when two writes share a timestamp. */
+  private seenVersion = "";
   private lastUid: string | undefined;
 
   constructor(private readonly path: string) {}
@@ -127,21 +128,22 @@ export class SsoTokenStore implements TokenStore {
   }
 
   read(): StoredToken | undefined {
-    let mtimeMs: number;
+    let version: string;
     try {
-      mtimeMs = statSync(this.path).mtimeMs;
+      const info = statSync(this.path);
+      version = `${info.mtimeMs}:${info.ino}:${info.size}`;
     } catch {
       this.current = undefined;
-      this.seenMtimeMs = -1;
+      this.seenVersion = "";
       return undefined;
     }
-    if (mtimeMs !== this.seenMtimeMs) {
+    if (version !== this.seenVersion) {
       try {
         const parsed = JSON.parse(readFileSync(this.path, "utf8")) as StoredToken;
         if (typeof parsed.token !== "string" || typeof parsed.expiresAtMs !== "number") return undefined;
         this.purgeCachesIfUserChanged(parsed.uid);
         this.current = parsed;
-        this.seenMtimeMs = mtimeMs;
+        this.seenVersion = version;
         if (parsed.uid !== undefined) this.lastUid = parsed.uid;
       } catch {
         this.current = undefined;
@@ -157,7 +159,8 @@ export class SsoTokenStore implements TokenStore {
     writeFileSync(tmp, JSON.stringify(token), { mode: 0o600 });
     renameSync(tmp, this.path);
     this.current = token;
-    this.seenMtimeMs = statSync(this.path).mtimeMs;
+    const written = statSync(this.path);
+    this.seenVersion = `${written.mtimeMs}:${written.ino}:${written.size}`;
     this.purgeCachesIfUserChanged(token.uid);
     if (token.uid !== undefined) this.lastUid = token.uid;
   }
@@ -171,7 +174,7 @@ export class SsoTokenStore implements TokenStore {
 
   clear(): void {
     this.current = undefined;
-    this.seenMtimeMs = -1;
+    this.seenVersion = "";
     try {
       unlinkSync(this.path);
     } catch {
