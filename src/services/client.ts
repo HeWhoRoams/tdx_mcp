@@ -4,10 +4,10 @@ import { Agent as HttpsAgent } from "node:https";
 import { getConfig } from "../config.js";
 import { increment, logger } from "./logger.js";
 import { RateLimiter } from "./rate-limiter.js";
-import { createTokenStore, type TokenStore } from "./token-store.js";
-import { getReferenceCache, getRecordCache, scopedCacheKey, setCacheNamespace } from "./cache.js";
-import { ssoLoginRequiredMessage } from "../auth/sso-login.js";
-import { createSsoLifecycle, type SsoLifecycle } from "../auth/sso-lifecycle.js";
+import { createServiceTokenStore, type TokenStore } from "./token-store.js";
+import { getReferenceCache, getRecordCache, scopedCacheKey } from "./cache.js";
+import { createSsoAuthorization } from "../auth/sso-composition.js";
+import type { SsoAuthorization } from "../auth/sso-lifecycle.js";
 import { SSO_ACTION_REQUIRED, SSO_RENEWAL_UNAVAILABLE, SsoUnavailableError } from "../auth/sso-errors.js";
 
 export class TeamDynamixAuthError extends Error {}
@@ -95,16 +95,16 @@ export class TeamDynamixClient {
   private readonly httpsAgent: HttpsAgent;
   private readonly limiter: RateLimiter;
   private readonly tokens: TokenStore;
-  private readonly ssoLifecycle: SsoLifecycle | undefined;
   private loginInFlight: Promise<string> | undefined;
   private readonly inFlight = new Map<string, Promise<unknown>>();
 
-  constructor() {
+  /** `sso` is supplied by the composition root for per-user sign-in; absent for service accounts. */
+  constructor(private readonly sso?: SsoAuthorization) {
     const config = getConfig();
     this.httpAgent = new HttpAgent({ keepAlive: true, maxSockets: config.http.maxSockets, keepAliveMsecs: 30_000 });
     this.httpsAgent = new HttpsAgent({ keepAlive: true, maxSockets: config.http.maxSockets, keepAliveMsecs: 30_000 });
     this.limiter = new RateLimiter(config.http.rateLimit, config.http.rateWindowMs);
-    this.tokens = createTokenStore();
+    this.tokens = createServiceTokenStore();
     this.http = axios.create({
       baseURL: config.apiBaseUrl,
       timeout: config.http.timeoutMs,
@@ -112,25 +112,13 @@ export class TeamDynamixClient {
       httpsAgent: this.httpsAgent,
       headers: { "Content-Type": "application/json", Accept: "application/json" },
     });
-    if (config.auth.method === "sso") {
-      this.ssoLifecycle = createSsoLifecycle(
-        config,
-        this.tokens,
-        (event, fields) =>
-          logger.info("sso lifecycle", { event, realm: config.apiBaseUrl, expectedUser: config.auth.method === "sso" ? config.auth.expectedUser : undefined, ...fields }),
-        { probe: (token) => this.probeGetUser(token) }
-      );
-      const lifecycle = this.ssoLifecycle;
-      setCacheNamespace(() => lifecycle.cacheNamespace());
-      this.ssoLifecycle.start();
-    }
   }
 
   private async login(): Promise<string> {
     const config = getConfig();
     if (config.auth.method === "sso") {
       // SSO needs a human at a browser. The server never starts one on its own.
-      throw new TeamDynamixAuthError(ssoLoginRequiredMessage(config.apiBaseUrl, this.tokens.read()));
+      throw new TeamDynamixAuthError(`${SSO_ACTION_REQUIRED}: sign in with \`npm run login\`, then retry.`);
     }
     const started = Date.now();
     try {
@@ -161,32 +149,21 @@ export class TeamDynamixClient {
     }
   }
 
-  /** Asks TeamDynamix whether it still accepts a token. Only 401/3xx count as rejection; anything else is unknown. */
-  private async probeGetUser(token: string): Promise<"ok" | "unauthorized" | "unknown"> {
-    try {
-      await this.http.get("/auth/getuser", { headers: { Authorization: `Bearer ${token}` }, maxRedirects: 0 });
-      return "ok";
-    } catch (error) {
-      const status = error instanceof AxiosError ? error.response?.status : undefined;
-      return status === 401 || (status !== undefined && status >= 300 && status < 400) ? "unauthorized" : "unknown";
-    }
-  }
-
-  private async getToken(): Promise<string> {
-    if (this.ssoLifecycle) {
+  private async getAuthorization(): Promise<{ header: string; fingerprint?: string }> {
+    if (this.sso) {
       try {
-        return await this.ssoLifecycle.authorization();
+        return await this.sso.authorize();
       } catch (error) {
-        if (error instanceof SsoUnavailableError) {
-          throw new TeamDynamixAuthError(`${SSO_RENEWAL_UNAVAILABLE}: ${error.message}`);
-        }
+        const message = error instanceof Error ? error.message : "";
         throw new TeamDynamixAuthError(
-          `${SSO_ACTION_REQUIRED}: ${ssoLoginRequiredMessage(getConfig().apiBaseUrl, this.tokens.read())} ${
-            error instanceof Error ? error.message : ""
-          }`.trim()
+          `${error instanceof SsoUnavailableError ? SSO_RENEWAL_UNAVAILABLE : SSO_ACTION_REQUIRED}: ${message}`.trim()
         );
       }
     }
+    return { header: `Bearer ${await this.getToken()}` };
+  }
+
+  private async getToken(): Promise<string> {
     const bufferMs = 60_000; // refresh a minute before expiry
     const cached = this.tokens.read();
     if (cached && cached.expiresAtMs - bufferMs > Date.now()) return cached.token;
@@ -205,7 +182,7 @@ export class TeamDynamixClient {
    */
   async warmUp(): Promise<void> {
     try {
-      await this.getToken();
+      await this.getAuthorization();
     } catch (error) {
       logger.warn("token warm-up failed; will retry on first request", { error: String(error) });
       return;
@@ -312,7 +289,7 @@ export class TeamDynamixClient {
 
     for (;;) {
       await this.limiter.acquire();
-      const token = await this.getToken();
+      const authorization = await this.getAuthorization();
       increment("requests");
       try {
         const response = await this.http.request<T>({
@@ -320,7 +297,7 @@ export class TeamDynamixClient {
           method,
           data,
           params,
-          headers: { Authorization: `Bearer ${token}` },
+          headers: { Authorization: authorization.header },
         });
         logger.debug("teamdynamix request", {
           method,
@@ -336,8 +313,8 @@ export class TeamDynamixClient {
         attempt += 1;
         const retryAfterMs = parseRetryAfterMs(error.response?.headers?.["retry-after"]);
 
-        if (status === 401 && this.ssoLifecycle) {
-          const verdict = await this.ssoLifecycle.handleUnauthorized(token);
+        if (status === 401 && this.sso && authorization.fingerprint) {
+          const verdict = await this.sso.reportUnauthorized(authorization.fingerprint);
           if (verdict === "permission-denied") {
             throw new TeamDynamixPermissionError(
               `TeamDynamix denied ${method} ${path}. You are signed in as yourself, so your own TeamDynamix role or application access does not allow this.`
@@ -402,8 +379,7 @@ export class TeamDynamixClient {
 
   /** Releases sockets so short-lived processes exit promptly. */
   destroy(): void {
-    this.ssoLifecycle?.stop();
-    if (this.ssoLifecycle) setCacheNamespace(undefined);
+    this.sso?.stop();
     this.httpAgent.destroy();
     this.httpsAgent.destroy();
   }
@@ -412,7 +388,7 @@ export class TeamDynamixClient {
 let clientInstance: TeamDynamixClient | undefined;
 
 export function getClient(): TeamDynamixClient {
-  if (!clientInstance) clientInstance = new TeamDynamixClient();
+  if (!clientInstance) clientInstance = new TeamDynamixClient(createSsoAuthorization(getConfig()));
   return clientInstance;
 }
 

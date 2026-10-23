@@ -184,6 +184,12 @@ export class SsoTokenStore implements TokenStore {
 export function createTokenStore(): TokenStore {
   const config = getConfig();
   if (config.auth.method === "sso") return new SsoTokenStore(ssoTokenPath(bindingOf(config.apiBaseUrl, config.auth.expectedUser)));
+  return createServiceTokenStore();
+}
+
+/** Token storage for admin and user logins. SSO state is built by the composition root instead. */
+export function createServiceTokenStore(): TokenStore {
+  const config = getConfig();
   return config.tokenCache === "file"
     ? new FileTokenStore(`${config.apiBaseUrl}|${config.authCacheKey}`)
     : new MemoryTokenStore();

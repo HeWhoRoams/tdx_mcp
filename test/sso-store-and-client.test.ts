@@ -7,7 +7,7 @@ import { bindingOf } from "../src/auth/identity-binding.js";
 import { browserProfileDir, ssoTokenPath } from "../src/auth/paths.js";
 import { ConfigError, getConfig, resetConfig } from "../src/config.js";
 import { getReferenceCache, resetCaches } from "../src/services/cache.js";
-import { getClient, resetClient, TeamDynamixAuthError, TeamDynamixTransientAuthError, TeamDynamixPermissionError } from "../src/services/client.js";
+import { getClient, resetClient, TeamDynamixClient, TeamDynamixAuthError, TeamDynamixTransientAuthError, TeamDynamixPermissionError } from "../src/services/client.js";
 import { SsoTokenStore, type StoredToken } from "../src/services/token-store.js";
 
 const API = "https://example.teamdynamix.com/SBTDWebApi/api";
@@ -142,6 +142,8 @@ describe("sso client", () => {
       get: vi.fn(getImpl),
       post: vi.fn(),
     } as unknown as ReturnType<typeof axios.create>);
+    // The sign-in lifecycle probes /auth/getuser itself, with its own request.
+    vi.spyOn(axios, "get").mockImplementation(getImpl as never);
   }
 
   it("asks for a sign-in when no token is saved, without any network call", async () => {
@@ -200,5 +202,32 @@ describe("cache namespace", () => {
     } finally {
       setCacheNamespace(undefined);
     }
+  });
+});
+
+describe("client with an injected SsoAuthorization", () => {
+  it("sends only the handle's header, reports 401s by fingerprint, and never touches a token file", async () => {
+    const request = vi.fn(async () => { throw unauthorized(); });
+    vi.spyOn(axios, "create").mockReturnValue({ request, get: vi.fn(), post: vi.fn() } as unknown as ReturnType<typeof axios.create>);
+    const sso = {
+      authorize: vi.fn(async () => ({ header: "Bearer from-handle", fingerprint: "fp1" })),
+      reportUnauthorized: vi.fn(async () => "permission-denied" as const),
+      stop: vi.fn(),
+    };
+    const client = new TeamDynamixClient(sso);
+    await expect(client.request("/tickets/1")).rejects.toThrow(TeamDynamixPermissionError);
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({ headers: { Authorization: "Bearer from-handle" } }));
+    expect(sso.reportUnauthorized).toHaveBeenCalledWith("fp1");
+    client.destroy();
+    expect(sso.stop).toHaveBeenCalled();
+  });
+
+  it("maps handle failures to the single canonical codes", async () => {
+    vi.spyOn(axios, "create").mockReturnValue({ request: vi.fn(), get: vi.fn(), post: vi.fn() } as unknown as ReturnType<typeof axios.create>);
+    const { SsoActionRequiredError, SsoUnavailableError } = await import("../src/auth/sso-errors.js");
+    const make = (error: Error) =>
+      new TeamDynamixClient({ authorize: async () => { throw error; }, reportUnauthorized: vi.fn(), stop: vi.fn() } as never);
+    await expect(make(new SsoActionRequiredError("go sign in")).request("/x")).rejects.toThrow(/^SSO_ACTION_REQUIRED: go sign in/);
+    await expect(make(new SsoUnavailableError("later")).request("/x")).rejects.toThrow(/^SSO_RENEWAL_UNAVAILABLE: later/);
   });
 });

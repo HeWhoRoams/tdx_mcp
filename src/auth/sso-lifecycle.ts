@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { RealmLock } from "./realm-lock.js";
 import axios from "axios";
 import { existsSync, rmSync } from "node:fs";
@@ -5,8 +6,8 @@ import { bindingDigest, bindingOf, type IdentityBinding } from "./identity-bindi
 import { browserProfileDir } from "./paths.js";
 import { openHermesCdpBrowserSession } from "./hermes-cdp-browser.js";
 import { openLocalBrowserSession, type SsoBrowserSession } from "./sso-browser.js";
-import { buildStoredToken, decodeJwtClaims, SsoLoginError, SsoPolicyError } from "./sso-login.js";
-import { isRetryable, SsoActionRequiredError } from "./sso-errors.js";
+import { buildStoredToken, decodeJwtClaims, ssoLoginRequiredMessage, SsoLoginError, SsoPolicyError } from "./sso-login.js";
+import { isRetryable, SsoActionRequiredError, SsoUnavailableError } from "./sso-errors.js";
 import { SsoRenewalManager } from "./sso-renewal.js";
 import {
   CredentialState,
@@ -43,6 +44,16 @@ export type SsoAuditEvent =
 /** What TeamDynamix said about a token it just answered 401 for. */
 export type UnauthorizedVerdict = "permission-denied" | "expired" | "revoked" | "unknown";
 
+/**
+ * What the HTTP client sees of SSO. It never receives the token itself, only a ready
+ * Authorization header and a fingerprint to report a rejected request with.
+ */
+export interface SsoAuthorization {
+  authorize(): Promise<{ header: string; fingerprint: string }>;
+  reportUnauthorized(fingerprint: string): Promise<UnauthorizedVerdict>;
+  stop(): void;
+}
+
 /** Asks TeamDynamix whether it still accepts a token (GET /auth/getuser). */
 export type SsoProbe = (token: string) => Promise<"ok" | "unauthorized" | "unknown">;
 
@@ -55,11 +66,6 @@ export interface SsoLifecycleOverrides {
 }
 
 /** The only credential interface given to the TeamDynamix transport. */
-export interface SsoAuthorization {
-  authorization(): Promise<string>;
-  handleUnauthorized(token: string): Promise<UnauthorizedVerdict>;
-}
-
 const PROBE_SUCCESS_TTL_MS = 60_000;
 
 function defaultProbe(apiBaseUrl: string): SsoProbe {
@@ -80,6 +86,7 @@ function defaultProbe(apiBaseUrl: string): SsoProbe {
 
 /** Deep lifecycle module for one realm and Expected user. */
 export class SsoLifecycle implements SsoAuthorization {
+  private readonly issued = new Map<string, string>();
   private readonly renewal: SsoRenewalManager;
   private readonly auth: Extract<Config["auth"], { method: "sso" }>;
   private readonly config: Config;
@@ -139,6 +146,27 @@ export class SsoLifecycle implements SsoAuthorization {
   }
   stop(): void {
     this.renewal.stop();
+  }
+
+  async authorize(): Promise<{ header: string; fingerprint: string }> {
+    try {
+      const token = await this.authorization();
+      const fingerprint = createHash("sha256").update(token).digest("hex").slice(0, 16);
+      this.issued.delete(fingerprint);
+      this.issued.set(fingerprint, token);
+      if (this.issued.size > 8) this.issued.delete(this.issued.keys().next().value as string);
+      return { header: `Bearer ${token}`, fingerprint };
+    } catch (error) {
+      if (error instanceof SsoUnavailableError) throw error;
+      const hint = ssoLoginRequiredMessage(this.config.apiBaseUrl, this.state.currentToken());
+      throw new SsoActionRequiredError(`${hint} ${error instanceof Error ? error.message : ""}`.trim());
+    }
+  }
+
+  /** A fingerprint we no longer hold belongs to an older token; the caller simply retries. */
+  async reportUnauthorized(fingerprint: string): Promise<UnauthorizedVerdict> {
+    const token = this.issued.get(fingerprint);
+    return token === undefined ? "expired" : this.handleUnauthorized(token);
   }
 
   async authorization(): Promise<string> {
