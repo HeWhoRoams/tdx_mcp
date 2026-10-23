@@ -1,8 +1,15 @@
 # TeamDynamix MCP Server
 
+**Version:** 2.1.0 · **Last updated:** 2026-10-23
+
 An MCP (Model Context Protocol) server that lets LLM agents interact with the
 [TeamDynamix Web API](https://solutions.teamdynamix.com/TDWebApi/) — tickets,
 assets, configuration items (CMDB), projects, issues, people, groups, and reports.
+
+## Changelog
+
+- **2.1.0** — SSO user authentication: per-user token lifecycle, silent renewal via persistent browser session, Hermes CDP compatibility gate, `login`/`whoami`/`logout` CLI commands, realm-locked credential state.
+- **2.0.0** — Full rewrite: policy-gated tool registration, capability tiers (read/create/edit/destroy), structured caching with domain invalidation, rate limiting, cursor-based pagination, `defineTool` framework.
 
 ## Authenticate as yourself (SSO)
 
