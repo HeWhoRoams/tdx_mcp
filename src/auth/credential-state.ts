@@ -135,6 +135,12 @@ export class CredentialState {
     return this.store.read();
   }
 
+  /** True until any login, sign-out, block or revocation has ever been recorded for this realm. */
+  isPristine(): boolean {
+    const state = this.persistence.read();
+    return state.epoch === 0 && state.renewal === "allowed";
+  }
+
   epoch(): number {
     return this.persistence.read().epoch;
   }

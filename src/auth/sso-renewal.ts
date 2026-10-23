@@ -128,6 +128,15 @@ export class SsoRenewalManager {
 
   /** The caller needs a token now. Whatever the failure, serve a still-valid token if one exists. */
   private async renewForeground(previous: StoredToken | undefined): Promise<string> {
+    // Honour the backoff here too: a caller arriving every second must not relaunch a browser every second.
+    if (!this.inFlight && this.now() < this.retryNotBeforeMs) {
+      const status = this.dependencies.state.status();
+      if (status.kind === "usable" || status.kind === "renewal-blocked") return status.token.token;
+      if (status.kind === "action-required") throw new SsoActionRequiredError(blockedMessage(status.reason));
+      throw new SsoUnavailableError(
+        "TeamDynamix sign-in could not be renewed a moment ago and is waiting to retry. Retry shortly, or run `npm run login`."
+      );
+    }
     try {
       return await this.renew(previous);
     } catch (error) {
@@ -168,15 +177,19 @@ export class SsoRenewalManager {
     const waitMs = this.dependencies.peerWaitMs ?? PEER_WAIT_MS;
     const polls = Math.max(1, Math.ceil(waitMs / PEER_POLL_MS));
     for (let poll = 0; poll <= polls; poll += 1) {
-      const release = renewalLock.tryAcquire();
-      if (release) {
+      const handle = renewalLock.tryAcquire();
+      if (handle) {
+        // A renewal can outlast the stale window (browser timeouts plus backoff); keep proving we are alive.
+        const heartbeat = setInterval(() => handle.refresh(), Math.max(1_000, renewalLock.staleMs / 4));
+        heartbeat.unref?.();
         try {
           // The peer may have finished between our decision to renew and getting the lock.
           const shared = this.freshTokenFromPeer(previous);
           if (shared) return shared;
           return await this.runRenewal(previous, epochAtStart);
         } finally {
-          release();
+          clearInterval(heartbeat);
+          handle.release();
         }
       }
       // Another process is renewing. Waiting for its result is not a failure.

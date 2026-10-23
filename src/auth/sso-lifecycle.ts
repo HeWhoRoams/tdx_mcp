@@ -167,6 +167,7 @@ export class SsoLifecycle implements SsoAuthorization {
       stateHome: getTdxHome(),
       tokenPath: ssoTokenPath(this.binding),
       currentProfileDir: browserProfileDir(this.binding),
+      isPristine: () => this.state.isPristine(),
       validate: (token) => this.validate(token, undefined, false),
       commit: (token) => this.state.commitLogin({ ...token, method: token.method ?? "sso" }),
       audit: (event, fields) => this.audit(event, fields),
@@ -185,9 +186,16 @@ export class SsoLifecycle implements SsoAuthorization {
       if (this.issued.size > 8) this.issued.delete(this.issued.keys().next().value as string);
       return { header: `Bearer ${token}`, fingerprint };
     } catch (error) {
+      if (error instanceof SsoActionRequiredError) {
+        const hint = ssoLoginRequiredMessage(this.config.apiBaseUrl, this.state.currentToken());
+        throw new SsoActionRequiredError(`${hint} ${error.message}`.trim());
+      }
       if (error instanceof SsoUnavailableError) throw error;
-      const hint = ssoLoginRequiredMessage(this.config.apiBaseUrl, this.state.currentToken());
-      throw new SsoActionRequiredError(`${hint} ${error instanceof Error ? error.message : ""}`.trim());
+      // Anything else (a lock timeout, a renewal discarded by a concurrent login or logout) is not
+      // something `npm run login` fixes; the caller can simply retry.
+      throw new SsoUnavailableError(
+        `TeamDynamix sign-in state was busy or changed just now; retry shortly. ${error instanceof Error ? error.message : ""}`.trim()
+      );
     }
   }
 
@@ -196,8 +204,8 @@ export class SsoLifecycle implements SsoAuthorization {
    * lock, identity validation and the epoch check, so it can never do what a real renewal may not.
    */
   async forceRenewal(): Promise<{ uid?: string; expiresAtMs: number; fingerprint: string }> {
-    const release = this.renewalLock?.tryAcquire();
-    if (this.renewalLock && !release) throw new SsoUnavailableError("Another process is renewing the sign-in.");
+    const handle = this.renewalLock?.tryAcquire();
+    if (this.renewalLock && !handle) throw new SsoUnavailableError("Another process is renewing the sign-in.");
     try {
       const epochAtStart = this.state.epoch();
       const previous = this.state.currentToken();
@@ -216,7 +224,7 @@ export class SsoLifecycle implements SsoAuthorization {
         fingerprint: createHash("sha256").update(stored.token).digest("hex").slice(0, 16),
       };
     } finally {
-      release?.();
+      handle?.release();
     }
   }
 
@@ -324,6 +332,13 @@ export class SsoLifecycle implements SsoAuthorization {
   }
 
   private async validate(token: string, previous: StoredToken | undefined, renewal: boolean): Promise<StoredToken> {
+    if (renewal && previous?.uid === undefined && !this.auth.expectedUser) {
+      // Nothing to pin the user to. A first sign-in with no Expected user must be a person's own login.
+      throw new SsoLoginError(
+        "There is no saved sign-in to renew from and no Expected user is configured. Run `npm run login`.",
+        "interaction-required"
+      );
+    }
     return buildStoredToken(token, this.config.apiBaseUrl, {
       ...(this.auth.expectedUser ? { expectedUser: this.auth.expectedUser } : {}),
       method: "sso",

@@ -121,6 +121,11 @@ export function setCacheNamespace(provider: (() => string | undefined) | undefin
   cacheNamespace = provider;
 }
 
+/** False while an SSO realm has no verified signed-in person: nothing may be cached for an unverified identity. */
+export function cachingAllowed(): boolean {
+  return !cacheNamespace || cacheNamespace() !== undefined;
+}
+
 export function scopedCacheKey(key: string): string {
   if (!cacheNamespace) return key;
   return `sso:${cacheNamespace() ?? "unverified"}:${key}`;

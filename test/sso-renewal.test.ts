@@ -155,6 +155,20 @@ describe("SsoRenewalManager", () => {
     });
   });
 
+  describe("backoff applies to foreground callers too", () => {
+    it("does not relaunch a browser on every call while waiting to retry", async () => {
+      const h = harness(oldToken, { nowMs: 50_000, openSession: unavailable }); // expired
+      await expect(h.manager.getUsableToken()).rejects.toThrow(SsoUnavailableError);
+      expect(h.openSession).toHaveBeenCalledTimes(1);
+      await expect(h.manager.getUsableToken()).rejects.toThrow(/waiting to retry/);
+      await expect(h.manager.getUsableToken()).rejects.toThrow(/waiting to retry/);
+      expect(h.openSession).toHaveBeenCalledTimes(1);
+      h.clock.nowMs += 60_000; // past the retry delay
+      await expect(h.manager.getUsableToken()).rejects.toThrow(SsoUnavailableError);
+      expect(h.openSession).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe("logout wins over a renewal that is already running", () => {
     it("discards the renewed token instead of signing the user back in", async () => {
       let release!: (token: string) => void;

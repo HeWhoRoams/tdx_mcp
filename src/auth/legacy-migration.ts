@@ -12,6 +12,8 @@ export interface LegacyMigrationDeps {
   /** Current token file; migration only runs while it is absent. */
   tokenPath: string;
   currentProfileDir: string;
+  /** False once the realm has any recorded history (a login, logout or block): migration must not undo it. */
+  isPristine(): boolean;
   /** Validates against /auth/getuser and the Expected user; throws if the token is not that user's. */
   validate(token: string): Promise<StoredToken>;
   /** Stores the verified token as an interactive login would. */
@@ -53,6 +55,7 @@ export async function migrateLegacyState(deps: LegacyMigrationDeps): Promise<Mig
     return "untouched";
   };
   if (!binding.expectedUser) return skip("no-expected-user");
+  if (!deps.isPristine()) return skip("state-already-recorded");
 
   let legacy: StoredToken;
   try {
@@ -70,6 +73,7 @@ export async function migrateLegacyState(deps: LegacyMigrationDeps): Promise<Mig
     return skip("not-verified-as-expected-user");
   }
   if (existsSync(deps.tokenPath)) return "already-migrated"; // another process won while we validated
+  if (!deps.isPristine()) return skip("state-changed-during-validation"); // a logout or login happened meanwhile
 
   deps.commit(verified);
   try {

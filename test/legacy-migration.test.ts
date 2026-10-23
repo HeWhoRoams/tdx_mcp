@@ -25,9 +25,10 @@ function setup(options: { expectedUser?: string | undefined; legacy?: StoredToke
   const currentProfileDir = join(home, "browser-profiles", "sso-new");
   const commit = vi.fn((token: StoredToken) => writeFileSync(tokenPath, JSON.stringify(token)));
   const audit = vi.fn();
+  const pristine = { value: true };
   const validate = vi.fn(options.validate ?? (async () => ({ ...legacyToken, token: "legacy", fullName: "Me" })));
-  const run = () => migrateLegacyState({ binding, stateHome: home, tokenPath, currentProfileDir, validate, commit, audit });
-  return { run, commit, audit, validate, legacyPath, tokenPath, currentProfileDir };
+  const run = () => migrateLegacyState({ binding, stateHome: home, tokenPath, currentProfileDir, isPristine: () => pristine.value, validate, commit, audit });
+  return { pristine, run, commit, audit, validate, legacyPath, tokenPath, currentProfileDir };
 }
 
 describe("migrateLegacyState", () => {
@@ -84,6 +85,22 @@ describe("migrateLegacyState", () => {
     await t.run();
     await expect(t.run()).resolves.toBe("already-migrated");
     expect(t.commit).toHaveBeenCalledOnce();
+  });
+
+  it("never undoes a sign-out: recorded state means no migration", async () => {
+    const t = setup();
+    t.pristine.value = false; // the user already logged out (or in) in this realm
+    await expect(t.run()).resolves.toBe("untouched");
+    expect(t.validate).not.toHaveBeenCalled();
+    expect(t.commit).not.toHaveBeenCalled();
+    expect(t.audit).toHaveBeenCalledWith("state_migration_skipped", { reason: "state-already-recorded" });
+  });
+
+  it("backs out when a logout lands while the legacy token is being verified", async () => {
+    let t!: ReturnType<typeof setup>;
+    t = setup({ validate: async () => { t.pristine.value = false; return { ...legacyToken, token: "legacy" }; } });
+    await expect(t.run()).resolves.toBe("untouched");
+    expect(t.commit).not.toHaveBeenCalled();
   });
 
   it("reports when there is nothing to migrate", async () => {

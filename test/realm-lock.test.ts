@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,7 +23,7 @@ describe("RealmLock", () => {
     const release = a.tryAcquire();
     expect(release).toBeDefined();
     expect(b.tryAcquire()).toBeUndefined();
-    release!();
+    release!.release();
     expect(existsSync(path)).toBe(false);
     expect(b.tryAcquire()).toBeDefined();
   });
@@ -55,15 +55,41 @@ describe("RealmLock", () => {
     const stale = lock.tryAcquire()!;
     rmSync(path);
     const other = new RealmLock(path).tryAcquire()!;
-    stale(); // not ours any more
+    stale.release(); // not ours any more
     expect(existsSync(path)).toBe(true);
-    other();
+    other.release();
+  });
+
+  it("refresh keeps a long-running holder from being taken over", () => {
+    const clock = { now: 1_000_000 };
+    const holder = new RealmLock(path, { now: () => clock.now, hostname: "h", isAlive: () => true, staleMs: 60_000 });
+    const taker = new RealmLock(path, { now: () => clock.now, hostname: "h", isAlive: () => true, staleMs: 60_000 });
+    const handle = holder.tryAcquire()!;
+    clock.now += 50_000;
+    handle.refresh(); // heartbeat
+    clock.now += 50_000; // 100s after acquiring, but only 50s after the last heartbeat
+    expect(taker.tryAcquire()).toBeUndefined();
+    clock.now += 20_000; // heartbeat now 70s old: abandoned
+    expect(taker.tryAcquire()).toBeDefined();
+  });
+
+  it("a takeover in progress by someone else is respected and leaves the old lock alone", () => {
+    writeFileSync(path, JSON.stringify({ pid: 999_999, hostname: "h", acquiredAtMs: Date.now(), nonce: "dead" }));
+    writeFileSync(`${path}.takeover`, JSON.stringify({ pid: 1, hostname: "h", acquiredAtMs: Date.now(), nonce: "other" }));
+    const lock = new RealmLock(path, { hostname: "h", isAlive: () => false });
+    expect(lock.tryAcquire()).toBeUndefined();
+    expect(existsSync(path)).toBe(true);
+    // an abandoned takeover mutex is cleared so the next attempt can proceed
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(`${path}.takeover`, old, old);
+    expect(lock.tryAcquire()).toBeUndefined();
+    expect(lock.tryAcquire()).toBeDefined();
   });
 
   it("withSync times out when the lock stays busy", () => {
     const held = new RealmLock(path).tryAcquire()!;
     expect(() => new RealmLock(path).withSync(() => 1, { waitMs: 120, pollMs: 20 })).toThrow(/Timed out/);
-    held();
+    held.release();
   });
 });
 
@@ -117,6 +143,6 @@ describe("two renewal managers in one realm", () => {
     });
     await expect(manager.getUsableToken()).rejects.toThrow(/unavailable|try again/i);
     expect(read()?.token).toBe("old");
-    held();
+    held.release();
   });
 });

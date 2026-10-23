@@ -197,3 +197,26 @@ describe("forceRenewal (compatibility gate)", () => {
     expect(store.read()?.uid).toBe("u1");
   });
 });
+
+describe("first sign-in and error mapping", () => {
+  it("silent renewal cannot create the first sign-in when no Expected user pins it", async () => {
+    const minted = vi.fn(async () => jwt(7200));
+    const { lifecycle, store } = setup({ openRenewalSession: async () => ({ mintToken: minted, close: async () => undefined }) });
+    mockGetUser("u9");
+    await expect(lifecycle.authorize()).rejects.toThrow(/sign-in required|npm run login/i);
+    expect(store.read()).toBeUndefined();
+    expect(lifecycle.status()).toMatchObject({ state: "action-required", blockedReason: "interaction-required" });
+  });
+
+  it("a busy or changed state is retryable, not a request to sign in", async () => {
+    const { SsoUnavailableError, SsoActionRequiredError } = await import("../src/auth/sso-errors.js");
+    const { lifecycle, store } = setup();
+    store.write(stored(jwt(30), 30)); // renewal is needed in front of the call
+    const state = (lifecycle as unknown as { state: { status(): unknown } }).state;
+    vi.spyOn(state, "status").mockImplementation(() => { throw new Error("Timed out waiting for the TeamDynamix sign-in state lock."); });
+    const error = await lifecycle.authorize().catch((e) => e);
+    expect(error).toBeInstanceOf(SsoUnavailableError);
+    expect(error).not.toBeInstanceOf(SsoActionRequiredError);
+    expect(error.message).not.toMatch(/npm run login/);
+  });
+});

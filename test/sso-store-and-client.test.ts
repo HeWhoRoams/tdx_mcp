@@ -253,3 +253,31 @@ describe("composition root", () => {
     expect(scopedCacheKey("k")).toBe("k");
   });
 });
+
+describe("caching and retry bounds", () => {
+  it("does not cache anything for an unverified SSO identity", async () => {
+    const { cachingAllowed, setCacheNamespace } = await import("../src/services/cache.js");
+    expect(cachingAllowed()).toBe(true); // service accounts
+    try {
+      let ns: string | undefined;
+      setCacheNamespace(() => ns);
+      expect(cachingAllowed()).toBe(false);
+      ns = "digest:u1";
+      expect(cachingAllowed()).toBe(true);
+    } finally {
+      setCacheNamespace(undefined);
+    }
+  });
+
+  it("stops after repeated rejections of freshly authorized requests", async () => {
+    const request = vi.fn(async () => { throw unauthorized(); });
+    vi.spyOn(axios, "create").mockReturnValue({ request, get: vi.fn(), post: vi.fn() } as unknown as ReturnType<typeof axios.create>);
+    const sso = {
+      authorize: vi.fn(async () => ({ header: "Bearer t", fingerprint: "fp" })),
+      reportUnauthorized: vi.fn(async () => "expired" as const),
+      stop: vi.fn(),
+    };
+    await expect(new TeamDynamixClient(sso).request("/tickets/1")).rejects.toThrow(/^SSO_ACTION_REQUIRED: .*kept rejecting/);
+    expect(sso.authorize).toHaveBeenCalledTimes(3); // the first try plus two re-authorizations
+  });
+});

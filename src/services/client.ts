@@ -6,7 +6,7 @@ import { getConfig, isServiceAuth } from "../config.js";
 import { increment, logger } from "./logger.js";
 import { RateLimiter } from "./rate-limiter.js";
 import { createServiceTokenStore, type TokenStore } from "./token-store.js";
-import { getReferenceCache, getRecordCache, scopedCacheKey } from "./cache.js";
+import { getReferenceCache, getRecordCache, scopedCacheKey, cachingAllowed } from "./cache.js";
 import { createSsoAuthorization } from "../auth/sso-composition.js";
 import type { SsoAuthorization } from "../auth/sso-lifecycle.js";
 import { SSO_ACTION_REQUIRED, SSO_RENEWAL_UNAVAILABLE, SsoUnavailableError } from "../auth/sso-errors.js";
@@ -90,6 +90,9 @@ function backoffMs(attempt: number): number {
  * reuse, proactive rate limiting, single-flight de-duplication, and retry with
  * server-directed backoff. All tools go through `tdRequest`.
  */
+/** A request that is rejected this many times after fresh authorizations is not going to succeed. */
+const MAX_SSO_REAUTHORIZATIONS = 2;
+
 export class TeamDynamixClient {
   private readonly http: AxiosInstance;
   private readonly httpAgent: HttpAgent;
@@ -211,7 +214,7 @@ export class TeamDynamixClient {
     const { method = "GET", data, params, cacheKey, cacheTtlMs = 0, cacheTier = "reference", dedupe } = options;
     const path = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
     const scopedKey = cacheKey ? scopedCacheKey(cacheKey) : undefined;
-    const caching = Boolean(scopedKey) && cacheTtlMs > 0;
+    const caching = Boolean(scopedKey) && cacheTtlMs > 0 && cachingAllowed();
     const cache = cacheTier === "record" ? getRecordCache() : getReferenceCache();
 
     // Backstop for a mis-annotated tool. POST is ambiguous (TD searches are POSTs)
@@ -284,6 +287,7 @@ export class TeamDynamixClient {
     const { maxRetries, maxRateLimitWaits, maxRetryDelayMs } = getConfig().http;
     const started = Date.now();
     let refreshedToken = false;
+    let ssoReauthorizations = 0;
     let retries = 0;
     let rateLimitWaits = 0;
     let attempt = 0;
@@ -327,7 +331,13 @@ export class TeamDynamixClient {
             );
           }
           // "expired" or "revoked": the lifecycle has already updated its state, so
-          // getToken() now renews, or reports that a new sign-in is required.
+          // the next authorization renews, or reports that a new sign-in is required.
+          ssoReauthorizations += 1;
+          if (ssoReauthorizations > MAX_SSO_REAUTHORIZATIONS) {
+            throw new TeamDynamixAuthError(
+              `${SSO_ACTION_REQUIRED}: TeamDynamix kept rejecting the renewed sign-in. Run \`npm run login\`, then retry.`
+            );
+          }
           increment("retries");
           continue;
         }
