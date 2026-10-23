@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "teamdynamix-sso": {
+      "command": "node",
+      "args": ["C:\\Github\\tdx_mcp\\dist\\index.js"],
+      "env": {
+        "TEAMDYNAMIX_BASE_URL": "https://cmich.teamdynamix.com/SBTDWebApi",
+        "TEAMDYNAMIX_AUTH_METHOD": "sso",
+        "TEAMDYNAMIX_SSO_EXPECTED_USER": "niles1tj@cmich.edu"
+      }
+    }
+  }
+}

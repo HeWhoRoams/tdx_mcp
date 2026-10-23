@@ -4,6 +4,48 @@ An MCP (Model Context Protocol) server that lets LLM agents interact with the
 [TeamDynamix Web API](https://solutions.teamdynamix.com/TDWebApi/) — tickets,
 assets, configuration items (CMDB), projects, issues, people, groups, and reports.
 
+## Authenticate as yourself (SSO)
+
+For local use, the server can act as **you** instead of a shared admin key. TeamDynamix then enforces your own roles and application access, and records you as the author of anything created.
+
+```powershell
+npm install
+npm run build
+npm run login      # opens Edge, you finish CMU SSO + MFA, the window closes
+npm run whoami     # who you are, when the token expires, and whether renewal is healthy (~24h)
+npm run logout     # forget the token (add -- --all to also remove the login browser profile)
+```
+
+MCP client config (set auth in the client's `env` block, not `.env`, because clients often start the server from another folder):
+
+```json
+{
+  "mcpServers": {
+    "teamdynamix": {
+      "command": "node",
+      "args": ["C:\\Github\\tdx_mcp\\dist\\index.js"],
+      "env": {
+        "TEAMDYNAMIX_BASE_URL": "https://yourorg.teamdynamix.com/SBTDWebApi",
+        "TEAMDYNAMIX_AUTH_METHOD": "sso",
+        "TEAMDYNAMIX_SSO_EXPECTED_USER": "you@yourorg.edu"
+      }
+    }
+  }
+}
+```
+
+Notes: TeamDynamix tokens last 24 hours and have no refresh token. After the first login, the server silently mints and validates a replacement about one hour before expiry. If CMU SSO requires interaction or MFA, tools return `SSO_ACTION_REQUIRED`; run `npm run login` to recover. Sandbox and production keep separate state. See `docs/plans/sso-user-auth.md`.
+
+**States** (`npm run whoami`): *usable* (renews automatically); *renewal blocked* (renewal hit MFA or another policy, a different user, or a rejected token; the current token keeps working until it expires, then run `npm run login`); *needs renewal* (expired, renews on next use if it can); *sign-in required* (nothing usable, run `npm run login`). A timeout or 5xx from TeamDynamix never discards your token. `npm run logout` always wins over a renewal already in progress.
+
+**Several clients at once** (for example Claude Desktop and Claude Code on the same realm): they share one token file and take a lock around renewal, so only one browser window opens and the others pick up its result.
+
+**Upgrading from the first SSO release:** if `TEAMDYNAMIX_SSO_EXPECTED_USER` is set, an existing saved sign-in is carried over after TeamDynamix confirms it is yours. Otherwise it is left untouched and you simply run `npm run login`. With `TEAMDYNAMIX_MCP_DEPLOYMENT=external`, `logout --all` cannot end the Hermes browser's SSO session; ask the Hermes operator.
+
+### External Hermes SSO
+
+Set `TEAMDYNAMIX_MCP_DEPLOYMENT=external` for one persistent Hermes workspace and one assigned user. This requires `TRANSPORT=http`, loopback `HOST`, a separate `MCP_AUTH_TOKEN`, `TEAMDYNAMIX_SSO_EXPECTED_USER`, and `TEAMDYNAMIX_SSO_CDP_ENDPOINT=http://127.0.0.1:9222`. The server attaches only to that configured CDP endpoint and creates an owned renewal tab; it never forwards a TeamDynamix token through MCP. Validate the sandbox with `npm run test:hermes-sso -- --realm sandbox`. See [Hermes rollout](docs/operations/hermes-sso-rollout.md).
+
 ## Features
 
 64 tools across nine areas:
@@ -88,9 +130,19 @@ cp .env.example .env
 | `TEAMDYNAMIX_WS_KEY` | Admin service account Web Services Key |
 | `TEAMDYNAMIX_USERNAME` | Standard user/service-account login (alternative to BEID) |
 | `TEAMDYNAMIX_PASSWORD` | Password for user login |
-| `TEAMDYNAMIX_AUTH_METHOD` | Optional. Force `user` or `admin` if both are set |
+| `TEAMDYNAMIX_AUTH_METHOD` | Optional. Explicitly select `user`, `admin`, or `sso` |
+| `TEAMDYNAMIX_SSO_EXPECTED_USER` | Local SSO identity binding; required for external Hermes |
+| `TEAMDYNAMIX_SSO_BROWSER` | Local SSO browser channel: `msedge` (default), `chrome`, or `chromium` |
+| `TEAMDYNAMIX_MCP_DEPLOYMENT` | `local` (default) or `external` Hermes |
+| `TEAMDYNAMIX_SSO_CDP_ENDPOINT` | Required loopback Chrome CDP endpoint for external Hermes |
+| `TEAMDYNAMIX_SSO_RENEW_LEAD_MS` | Milliseconds before expiry to attempt silent SSO renewal; default `3600000` |
+| `TEAMDYNAMIX_SSO_RENEW_RETRIES` | Transient silent-renewal retries; default `3` |
 | `TEAMDYNAMIX_DEFAULT_APP_ID` | Optional. Default application for app-scoped tools, so `app_id` can be omitted |
-| `TEAMDYNAMIX_READ_ONLY` | Optional. Set exactly to `true` to omit all tools annotated as write-capable |
+| `TEAMDYNAMIX_READ_ONLY` | Optional. Set exactly to `true` to omit every tool that changes TeamDynamix |
+| `TDX_TOOL_POLICY_FILE` | Optional. Path to a tool policy JSON file; defaults to `config/tool-policy.json` |
+| `TDX_ALLOW_CAPABILITIES` | Optional. Comma-separated tiers to allow, e.g. `read,create`. Replaces the file's `defaults` |
+| `TDX_ALLOW_TOOLS` | Optional. Comma-separated allowlist. When set, only these tools register |
+| `TDX_DENY_TOOLS` | Optional. Comma-separated tool names to deny, overriding every other rule |
 | `TEAMDYNAMIX_TOKEN_CACHE` | `memory` (default) or `file` to persist the JWT across short-lived processes |
 | `TEAMDYNAMIX_TIMEOUT_MS` | Per-request timeout; default `15000` |
 | `TEAMDYNAMIX_MAX_SOCKETS` | Keep-alive connection pool size; default `8` |
@@ -114,8 +166,7 @@ cp .env.example .env
 All configuration is validated once at startup; invalid or missing values fail
 fast with a single message listing every problem.
 
-If both auth methods are configured, admin key-based auth is preferred. The server
-caches the JWT and auto-refreshes it ~1 minute before expiry (TD tokens last 24 hours).
+If no method is selected, admin key-based auth is preferred when both admin and user credentials are configured. SSO must be selected explicitly; its token lifecycle is separate from password/key authentication.
 
 `TEAMDYNAMIX_BASE_URL` is normalized to the API root used by the server. For a
 standard organization URL, the server calls
@@ -169,18 +220,72 @@ cross-origin methods. Browser clients must use an origin listed in
 
 ## Read and write capabilities
 
-The server exposes both data retrieval and environment-changing tools:
+Every tool is classified into one of four capability tiers, which the tool policy
+uses to decide what a given deployment may do:
 
-- **43 read tools** search, list, and retrieve TeamDynamix records. They declare
-  `readOnlyHint: true`.
-- **21 write tools** create, update, comment on, link, add, or remove records.
-  They declare `readOnlyHint: false`; destructive updates/removals also declare
-  `destructiveHint: true`.
+| Tier | Meaning | Examples | Default |
+|---|---|---|---|
+| `read` | Changes nothing | `teamdynamix_search_tickets`, `teamdynamix_get_report` | allow |
+| `create` | Adds new data; nothing existing is overwritten | `teamdynamix_create_ticket`, `teamdynamix_add_ticket_comment` | allow |
+| `edit` | Overwrites fields on an existing record | `teamdynamix_edit_ticket`, `teamdynamix_edit_asset`, `teamdynamix_edit_ci`, `teamdynamix_edit_ticket_task` | **deny** |
+| `destroy` | Deletes or unlinks existing data | `teamdynamix_remove_group_members` | **deny** |
+
+The `create`/`edit` split follows TeamDynamix's own vocabulary. Posting to a
+ticket's feed is an **update** — the normal technician workflow, additive, and
+allowed by default. Writing a ticket's Title, Status, or Responsible fields is an
+**edit**, and is denied unless a deployment opts in.
+
+Read tools declare `readOnlyHint: true`. Everything else declares
+`readOnlyHint: false`, and the `edit` and `destroy` tiers additionally declare
+`destructiveHint: true`.
 
 Client approval remains controlled by the MCP host. VS Code, Claude, ChatGPT,
 and OpenAI API applications can require confirmation before write calls. The
 TeamDynamix account configured on the server must itself have permission for the
 requested read or write operation.
+
+### Tool policy
+
+`config/tool-policy.json` decides which tools are registered. Denied tools are
+never advertised and cannot be invoked, so this is an enforcement boundary inside
+the server rather than a client approval hint.
+
+The checked-in policy allows `read` and `create` tools by default, while `edit`
+and `destroy` tools are denied unless explicitly enabled through a domain rule,
+tool rule, or environment override. The individual tool entries in the file
+default to `inherit`, so the tier and domain rules remain the source of truth.
+
+```jsonc
+{
+  "$schema": "./tool-policy.schema.json",
+  "defaults": { "read": "allow", "create": "allow", "edit": "deny", "destroy": "deny" },
+  "domains": {
+    "tickets": { "edit": "allow" },   // technicians may edit tickets...
+    "cmdb": { "edit": "deny" }        // ...but never the CMDB
+  },
+  "tools": {
+    "teamdynamix_edit_ticket_task": "allow",
+    "teamdynamix_remove_group_members": "deny"
+  },
+  "treatReadModifyWriteAsDestroy": false
+}
+```
+
+Rules are applied most specific first: `TDX_DENY_TOOLS`, then `TDX_ALLOW_TOOLS`,
+then `tools`, then `domains`, then `defaults`. A rule of `"inherit"` expresses no
+opinion and falls through to the next layer. `TEAMDYNAMIX_READ_ONLY=true`
+overrides everything and leaves only the `read` tier.
+
+A few TeamDynamix endpoints have no PATCH, so those tools read the record and
+write the whole thing back — a concurrent change is silently lost. Set
+`treatReadModifyWriteAsDestroy` to `true` to judge them under the `destroy` tier.
+
+An invalid or unreadable policy file is a startup failure; the server never falls
+back to a more permissive configuration. If the file is absent entirely, the
+built-in defaults above apply.
+
+Run `npm run policy:sync` after adding or removing a tool to keep the `tools` map
+in step with the catalog; a unit test fails if it drifts.
 
 ### Read-only server mode
 
@@ -192,11 +297,9 @@ TEAMDYNAMIX_READ_ONLY=true
 
 In this mode, the server does not register any tool whose annotation is
 `readOnlyHint: false`, so clients cannot discover or invoke those write tools.
-This is an enforcement boundary inside the MCP server, not merely a client
-approval hint. It is still best practice to use a dedicated TeamDynamix account
-with only the required read permissions, because API credentials are an
-independent defense layer. The default remains the full read/write tool set when
-the variable is unset or has any value other than the exact string `true`.
+It is still best practice to use a dedicated TeamDynamix account with only the
+required read permissions, because API credentials are an independent defense
+layer.
 
 ## Using with VS Code (GitHub Copilot)
 
@@ -441,7 +544,10 @@ src/
 ├── types.ts            # Shared TS interfaces, paginate(), cursor codec
 ├── framework/
 │   ├── defineTool.ts   # Declarative tool contract: format policy, errors, caching, timing
-│   └── annotations.ts  # READ / CREATE / MUTATE annotation presets
+│   └── annotations.ts  # READ / CREATE / EDIT / DESTROY capability presets
+├── policy/
+│   ├── index.ts        # Tool policy resolution and enforcement decisions
+│   └── schema.ts       # Zod schema for config/tool-policy.json
 ├── schemas/
 │   └── common.ts       # Reusable Zod schemas (AppIdSchema, PagingShape, etc.)
 ├── services/
@@ -466,6 +572,7 @@ src/
     └── reports.ts
 test/                  # vitest unit suite
 scripts/               # verify, list-apps, search-tickets, smoke-test, bench, protocol test
+config/                # tool-policy.json and its JSON schema
 ```
 
 ## License

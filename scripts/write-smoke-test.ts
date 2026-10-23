@@ -142,14 +142,14 @@ async function tierB(appId: number): Promise<void> {
   check("created ticket is readable", before.isError !== true);
 
   const newTitle = `[MCP TEST] renamed ${Date.now()}`;
-  const updated = await call("teamdynamix_update_ticket", {
+  const updated = await call("teamdynamix_edit_ticket", {
     app_id: appId,
     ticket_id: ticket.ID,
     title: newTitle,
     notify_responsible: false,
     response_format: "json",
   });
-  check("ticket updated", updated.isError !== true, text(updated));
+  check("ticket edited", updated.isError !== true, text(updated));
 
   const after = await call("teamdynamix_get_ticket", readArgs);
   const afterTitle = (after.structuredContent as { Title?: string } | undefined)?.Title;
@@ -178,7 +178,7 @@ async function tierB(appId: number): Promise<void> {
   const raceTitle = `[MCP TEST] race ${Date.now()}`;
   await Promise.all([
     call("teamdynamix_get_ticket", readArgs),
-    call("teamdynamix_update_ticket", {
+    call("teamdynamix_edit_ticket", {
       app_id: appId,
       ticket_id: ticket.ID,
       title: raceTitle,
@@ -192,7 +192,7 @@ async function tierB(appId: number): Promise<void> {
 
   const cancelled = statusList.find((status) => /cancel|closed/i.test(status.Name));
   if (cancelled) {
-    const closing = await call("teamdynamix_update_ticket", {
+    const closing = await call("teamdynamix_edit_ticket", {
       app_id: appId,
       ticket_id: ticket.ID,
       status_id: cancelled.ID,
@@ -228,8 +228,22 @@ async function run(): Promise<void> {
     process.exit(1);
   }
 
-  console.log(`\nWrite smoke test → ${config.apiBaseUrl} app ${appId} (tier ${tier})`);
   collectHandlers();
+
+  const requiredWriteHandlers =
+    tier.toLowerCase() === "b"
+      ? ["teamdynamix_create_ticket", "teamdynamix_edit_ticket", "teamdynamix_add_ticket_comment"]
+      : ["teamdynamix_create_ticket"];
+  const missingWriteHandlers = requiredWriteHandlers.filter((name) => !handlers.has(name));
+  if (missingWriteHandlers.length > 0) {
+    console.error(
+      `Refusing to run: the effective policy does not register the required write handlers for tier ${tier}: ` +
+        `${missingWriteHandlers.join(", ")}. Check tool- or domain-level overrides as well as TDX_ALLOW_CAPABILITIES.`
+    );
+    process.exit(1);
+  }
+
+  console.log(`\nWrite smoke test → ${config.apiBaseUrl} app ${appId} (tier ${tier})`);
 
   await tierA(appId);
   if (tier.toLowerCase() === "b") await tierB(appId);

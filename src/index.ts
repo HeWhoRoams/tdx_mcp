@@ -193,6 +193,12 @@ async function runHTTP(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  const command = process.argv[2];
+  if (command === "login" || command === "logout" || command === "whoami") {
+    // Human-run auth commands: no credentials required, and no server is started.
+    const { runAuthCli } = await import("./cli/auth-cli.js");
+    process.exit(await runAuthCli(command, process.argv.slice(3)));
+  }
   if (getConfig().transport === "http") await runHTTP();
   else await runStdio();
 }

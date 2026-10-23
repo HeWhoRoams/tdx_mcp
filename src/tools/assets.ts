@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { getConfig } from "../config.js";
-import { CREATE, MUTATE, READ } from "../framework/annotations.js";
+import { CREATE, EDIT, READ } from "../framework/annotations.js";
 import { defineTool, ToolInputError, type AnyToolDefinition } from "../framework/defineTool.js";
 import {
   AppIdSchema,
@@ -191,11 +191,11 @@ export const assetTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_update_asset",
-    title: "Update TeamDynamix Asset",
-    description: "Patches an asset, changing only the fields you supply.\nAt least one updatable field is required.",
+    name: "teamdynamix_edit_asset",
+    title: "Edit TeamDynamix Asset",
+    description: "Edits an asset's core fields, changing only the ones you supply.\nAt least one editable field is required.",
     input: UpdateInput,
-    annotations: MUTATE,
+    annotations: EDIT,
     invalidates: ASSETS,
     errorHints: assetWriteHints,
     handler: async (args) => {
@@ -221,7 +221,7 @@ export const assetTools: AnyToolDefinition[] = [
         data: operations,
       });
     },
-    render: (asset) => `# Asset Updated\n\n${renderAsset(asset)}`,
+    render: (asset) => `# Asset Edited\n\n${renderAsset(asset)}`,
   }),
 
   defineTool({

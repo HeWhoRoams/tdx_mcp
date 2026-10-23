@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { getConfig } from "../config.js";
-import { CREATE, MUTATE, READ } from "../framework/annotations.js";
+import { CREATE, EDIT, READ } from "../framework/annotations.js";
 import { defineTool, ToolInputError, type AnyToolDefinition } from "../framework/defineTool.js";
 import {
   AppIdSchema,
@@ -325,13 +325,13 @@ export const ticketTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_update_ticket",
-    title: "Update TeamDynamix Ticket",
+    name: "teamdynamix_edit_ticket",
+    title: "Edit TeamDynamix Ticket",
     description:
-      "Patches a ticket, changing only the fields you supply and leaving the rest untouched.\n" +
-      "At least one updatable field is required; responsible_uid, requestor_uid, and reviewer_uid all accept an email address.",
+      "Edits a ticket's core fields, changing only the ones you supply. To log progress or comment, use teamdynamix_add_ticket_comment.\n" +
+      "At least one editable field is required; responsible_uid accepts an email address.",
     input: UpdateInput,
-    annotations: MUTATE,
+    annotations: EDIT,
     invalidates: TICKETS,
     errorHints: ticketWriteHints,
     handler: async (args) => {
@@ -372,7 +372,7 @@ export const ticketTools: AnyToolDefinition[] = [
         params: { notifyNewResponsible: args.notify_responsible },
       });
     },
-    render: (ticket, args) => `# Ticket Updated\n\n${renderTicket(ticket, resolveAppId(args.app_id))}`,
+    render: (ticket, args) => `# Ticket Edited\n\n${renderTicket(ticket, resolveAppId(args.app_id))}`,
   }),
 
   defineTool({
@@ -466,13 +466,14 @@ export const ticketTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_update_ticket_task",
-    title: "Update TeamDynamix Ticket Task",
+    name: "teamdynamix_edit_ticket_task",
+    title: "Edit TeamDynamix Ticket Task",
     description:
-      "Updates a ticket task's title, dates, assignee, or percent_complete.\n" +
+      "Edits a ticket task's title, dates, assignee, or percent_complete.\n" +
       "Uses read-modify-write because TeamDynamix has no PATCH here, so concurrent edits can overwrite each other.",
     input: UpdateTaskInput,
-    annotations: MUTATE,
+    annotations: EDIT,
+    readModifyWrite: true,
     invalidates: TICKETS,
     handler: async (args) => {
       const changes: Record<string, unknown> = {};
@@ -490,7 +491,7 @@ export const ticketTools: AnyToolDefinition[] = [
       return tdRequest<Record<string, unknown>>(path, { method: "PUT", data: { ...existing, ...changes } });
     },
     render: (_task, args) =>
-      `Task #${args.task_id} updated on ticket #${args.ticket_id}.` +
+      `Task #${args.task_id} edited on ticket #${args.ticket_id}.` +
       (args.percent_complete !== undefined ? ` (${args.percent_complete}% complete)` : ""),
   }),
 ];

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { getConfig } from "../config.js";
-import { CREATE, MUTATE, READ } from "../framework/annotations.js";
+import { CREATE, EDIT, READ } from "../framework/annotations.js";
 import { defineTool, ToolInputError, type AnyToolDefinition } from "../framework/defineTool.js";
 import { AppIdSchema, PagingShape, PersonRefSchema, ResponseFormatSchema, sortBySchema } from "../schemas/common.js";
 import { tdRequest } from "../services/client.js";
@@ -131,13 +131,14 @@ export const issueTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_update_issue",
-    title: "Update TeamDynamix Issue",
+    name: "teamdynamix_edit_issue",
+    title: "Edit TeamDynamix Issue",
     description:
-      "Updates a project issue, changing only the fields you supply.\n" +
+      "Edits a project issue's core fields, changing only the ones you supply.\n" +
       "Uses read-modify-write because TeamDynamix has no PATCH here, so concurrent edits can overwrite each other.",
     input: UpdateInput,
-    annotations: MUTATE,
+    annotations: EDIT,
+    readModifyWrite: true,
     invalidates: ISSUES,
     handler: async (args) => {
       const changes: Record<string, unknown> = {};
@@ -154,6 +155,6 @@ export const issueTools: AnyToolDefinition[] = [
       const existing = await tdRequest<TdIssue>(path);
       return tdRequest<TdIssue>(path, { method: "POST", data: { ...existing, ...changes } });
     },
-    render: (issue) => `# Issue Updated\n\n${renderIssue(issue)}`,
+    render: (issue) => `# Issue Edited\n\n${renderIssue(issue)}`,
   }),
 ];

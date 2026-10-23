@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { getConfig } from "../config.js";
-import { CREATE, MUTATE, READ } from "../framework/annotations.js";
+import { DESTROY, EDIT, READ } from "../framework/annotations.js";
 import { defineTool, items, type AnyToolDefinition } from "../framework/defineTool.js";
 import { ChildPagingShape, PagingShape, ResponseFormatSchema, sortBySchema } from "../schemas/common.js";
 import { tdRequest } from "../services/client.js";
@@ -228,7 +228,7 @@ export const peopleTools: AnyToolDefinition[] = [
     title: "Add Members to TeamDynamix Group",
     description: "Adds one or more people to a group.\nAccepts UIDs or email addresses.",
     input: ManageMembersInput,
-    annotations: { ...CREATE, idempotentHint: true },
+    annotations: { ...EDIT, idempotentHint: true },
     invalidates: GROUPS,
     handler: async (args) => {
       const uids = await resolvePersonUids(args.uids);
@@ -243,7 +243,7 @@ export const peopleTools: AnyToolDefinition[] = [
     title: "Remove Members from TeamDynamix Group",
     description: "Removes one or more people from a group.\nAccepts UIDs or email addresses.",
     input: ManageMembersInput,
-    annotations: { ...MUTATE, idempotentHint: true },
+    annotations: { ...DESTROY, idempotentHint: true },
     invalidates: GROUPS,
     handler: async (args) => {
       const uids = await resolvePersonUids(args.uids);

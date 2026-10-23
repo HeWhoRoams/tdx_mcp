@@ -1,18 +1,15 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { getConfig } from "../config.js";
+import { decideTool, type ToolDomain } from "../policy/index.js";
 import { invalidateDomain } from "../services/cache.js";
 import { handleApiError } from "../services/client.js";
 import { truncate } from "../services/format.js";
 import { increment, logger } from "../services/logger.js";
 import { ResponseFormat } from "../types.js";
+import { clientAnnotations, type ToolAnnotations } from "./annotations.js";
 
-export interface ToolAnnotations {
-  readOnlyHint: boolean;
-  destructiveHint: boolean;
-  idempotentHint: boolean;
-  openWorldHint: boolean;
-}
+export type { Capability, ToolAnnotations } from "./annotations.js";
 
 /** Argument problems we can detect before calling TeamDynamix. */
 export class ToolInputError extends Error {}
@@ -27,6 +24,14 @@ export interface ToolDefinition<Shape extends z.ZodRawShape = z.ZodRawShape, Dat
   description: string;
   input: z.ZodObject<Shape>;
   annotations: ToolAnnotations;
+  /** Policy grouping. Applied in bulk by `withDomain` rather than per definition. */
+  domain?: ToolDomain;
+  /**
+   * The tool GETs the record and writes the whole thing back because TeamDynamix
+   * offers no PATCH here, so a concurrent change is silently lost. Deployments
+   * can have the policy treat these as destructive.
+   */
+  readModifyWrite?: boolean;
   handler: (args: z.infer<z.ZodObject<Shape>>) => Promise<Data>;
   /** Human-readable rendering used for the default markdown response format. */
   render: (data: Data, args: z.infer<z.ZodObject<Shape>>) => string;
@@ -52,6 +57,21 @@ export function defineTool<Shape extends z.ZodRawShape, Data extends StructuredD
   definition: ToolDefinition<Shape, Data>
 ): AnyToolDefinition {
   return definition as AnyToolDefinition;
+}
+
+/** Stamps a domain onto a whole tool file's exports so definitions stay free of boilerplate. */
+export function withDomain(domain: ToolDomain, definitions: AnyToolDefinition[]): AnyToolDefinition[] {
+  return definitions.map((definition) => ({ ...definition, domain }));
+}
+
+/** The facts the tool policy decides on. */
+function subjectOf(definition: AnyToolDefinition) {
+  return {
+    name: definition.name,
+    ...(definition.domain ? { domain: definition.domain } : {}),
+    capability: definition.annotations.capability,
+    ...(definition.readModifyWrite ? { readModifyWrite: true } : {}),
+  };
 }
 
 function textResult(text: string) {
@@ -98,12 +118,19 @@ function registerTool(server: McpServer, definition: AnyToolDefinition): void {
       title: definition.title,
       description: definition.description,
       inputSchema: definition.input.shape,
-      annotations: definition.annotations,
+      annotations: clientAnnotations(definition.annotations),
     },
     async (args: Record<string, unknown>) => {
       const started = Date.now();
       increment("toolCalls");
       try {
+        // Re-checked here as well as at registration so a denied tool can never run.
+        const decision = decideTool(getConfig().toolPolicy, subjectOf(definition));
+        if (!decision.allowed) {
+          throw new ToolInputError(
+            `${definition.name} is disabled on this server by policy (${decision.reason}).`
+          );
+        }
         const data = await definition.handler(args);
         if (definition.invalidates) {
           invalidateDomain(definition.invalidates.appIdFrom?.(args), definition.invalidates.domain);
@@ -130,19 +157,38 @@ function registerTool(server: McpServer, definition: AnyToolDefinition): void {
 }
 
 /**
- * Registers every definition, skipping write tools when the server is running
- * read-only. Filtering here means unregistered tools cannot be discovered or
- * invoked at all.
+ * Registers every definition the tool policy permits. Filtering here means a
+ * denied tool cannot be discovered or invoked at all.
  */
 export function registerTools(server: McpServer, definitions: AnyToolDefinition[]): number {
-  const readOnly = getConfig().readOnly;
+  const policy = getConfig().toolPolicy;
+  const denied: string[] = [];
   let registered = 0;
   for (const definition of definitions) {
-    if (readOnly && definition.annotations.readOnlyHint !== true) continue;
+    const decision = decideTool(policy, subjectOf(definition));
+    if (!decision.allowed) {
+      denied.push(`${definition.name} (${decision.reason})`);
+      continue;
+    }
     registerTool(server, definition);
     registered += 1;
   }
+  if (denied.length > 0) logger.debug("tools denied by policy", { denied });
   return registered;
+}
+
+/**
+ * A misspelled name silently withholds access rather than failing loudly, so
+ * report it. Only meaningful against the complete catalog.
+ */
+export function findUnknownPolicyNames(definitions: AnyToolDefinition[]): string[] {
+  const policy = getConfig().toolPolicy;
+  const known = new Set(definitions.map((definition) => definition.name));
+  const named = Object.entries(policy.tools)
+    .filter(([, rule]) => rule !== "inherit")
+    .map(([name]) => name);
+  const referenced = [...named, ...policy.denyTools, ...(policy.allowTools ?? [])];
+  return [...new Set(referenced)].filter((name) => !known.has(name));
 }
 
 /** Wraps list payloads for `structuredContent`, which must be a JSON object. */

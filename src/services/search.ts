@@ -3,7 +3,7 @@ import { getConfig } from "../config.js";
 import { MAX_SEARCH_FETCH, PAGING_WINDOW } from "../constants.js";
 import { ToolInputError } from "../framework/defineTool.js";
 import { decodeCursor, paginate, type PaginatedResult } from "../types.js";
-import { getSearchCache, searchCacheKey } from "./cache.js";
+import { cachingAllowed, getSearchCache, searchCacheKey } from "./cache.js";
 import { tdRequest } from "./client.js";
 import { increment, logger } from "./logger.js";
 
@@ -69,6 +69,7 @@ export async function searchPage<T>(
   options: SearchOptions = {}
 ): Promise<PaginatedResult<T>> {
   const cacheKey = searchCacheKey(endpoint, body);
+  const mayCache = cachingAllowed();
   const sig = signature(cacheKey, sortKeyOf(args));
 
   let offset = args.offset;
@@ -116,7 +117,7 @@ export async function searchPage<T>(
         data: { ...body, MaxResults: fetched },
         dedupe: true,
       })) ?? [];
-    cache.set(cacheKey, { items, fetched } satisfies CachedSearch<T>, ttlMs);
+    if (mayCache) cache.set(cacheKey, { items, fetched } satisfies CachedSearch<T>, ttlMs);
   }
 
   // TeamDynamix returned a full window, so the true match count is at least this.

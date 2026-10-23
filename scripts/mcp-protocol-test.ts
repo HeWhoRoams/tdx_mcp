@@ -8,6 +8,18 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 const expectedToolCount = 64;
+/** Denied by the shipped config/tool-policy.json, which allows only read and create. */
+const expectedPolicyDeniedToolNames = new Set([
+  "teamdynamix_edit_ticket",
+  "teamdynamix_edit_ticket_task",
+  "teamdynamix_edit_asset",
+  "teamdynamix_edit_ci",
+  "teamdynamix_edit_project",
+  "teamdynamix_edit_issue",
+  "teamdynamix_add_group_members",
+  "teamdynamix_remove_ci_relationship",
+  "teamdynamix_remove_group_members",
+]);
 const expectedReadOnlyToolNames = new Set([
   "teamdynamix_get_asset",
   "teamdynamix_get_asset_feed",
@@ -60,6 +72,8 @@ const baseEnvironment = Object.fromEntries(
     TEAMDYNAMIX_BASE_URL: "https://example.teamdynamix.com",
     TEAMDYNAMIX_BEID: "test-beid",
     TEAMDYNAMIX_WS_KEY: "test-key",
+    // Most checks assert the complete catalog, so lift the shipped policy's deny defaults.
+    TDX_ALLOW_CAPABILITIES: "read,create,edit,destroy",
   }).filter((entry): entry is [string, string] => entry[1] !== undefined)
 );
 
@@ -148,6 +162,38 @@ async function testReadOnlyStdio(): Promise<void> {
   try {
     await client.connect(transport);
     await validateClient(client, "read-only stdio", true);
+  } finally {
+    await client.close();
+  }
+}
+
+async function testDefaultPolicyStdio(): Promise<void> {
+  const client = new Client({ name: "teamdynamix-mcp-policy-test", version: "1.0.0" });
+  const environment = { ...baseEnvironment };
+  delete environment.TDX_ALLOW_CAPABILITIES;
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: ["dist/index.js"],
+    cwd: process.cwd(),
+    env: environment,
+    stderr: "pipe",
+  });
+
+  try {
+    await client.connect(transport);
+    const names = new Set((await client.listTools()).tools.map((tool) => tool.name));
+    const leaked = [...expectedPolicyDeniedToolNames].filter((name) => names.has(name));
+    if (leaked.length > 0) {
+      throw new Error(`default policy: edit/destroy tools were registered: ${leaked.join(", ")}.`);
+    }
+    for (const allowed of ["teamdynamix_add_ticket_comment", "teamdynamix_create_ticket", "teamdynamix_get_ticket"]) {
+      if (!names.has(allowed)) throw new Error(`default policy: expected ${allowed} to stay registered.`);
+    }
+    const expected = expectedToolCount - expectedPolicyDeniedToolNames.size;
+    if (names.size !== expected) {
+      throw new Error(`default policy: expected ${expected} tools, received ${names.size}.`);
+    }
+    console.log(`default policy stdio: ${names.size} tools (edit and destroy denied)`);
   } finally {
     await client.close();
   }
@@ -281,5 +327,6 @@ async function testHttp(): Promise<void> {
 
 await testStdio();
 await testReadOnlyStdio();
+await testDefaultPolicyStdio();
 await testHttp();
 console.log("MCP protocol compatibility checks passed.");

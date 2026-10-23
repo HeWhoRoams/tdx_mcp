@@ -110,6 +110,27 @@ export function resetCaches(): void {
   recordCache = undefined;
 }
 
+let cacheNamespace: (() => string | undefined) | undefined;
+
+/**
+ * Registers who the cache belongs to. Only SSO registers one; without it keys are used as-is
+ * (a single shared service identity). A registered namespace that has no verified identity yet
+ * maps to "unverified", which can never collide with a real person's entries.
+ */
+export function setCacheNamespace(provider: (() => string | undefined) | undefined): void {
+  cacheNamespace = provider;
+}
+
+/** False while an SSO realm has no verified signed-in person: nothing may be cached for an unverified identity. */
+export function cachingAllowed(): boolean {
+  return !cacheNamespace || cacheNamespace() !== undefined;
+}
+
+export function scopedCacheKey(key: string): string {
+  if (!cacheNamespace) return key;
+  return `sso:${cacheNamespace() ?? "unverified"}:${key}`;
+}
+
 /**
  * Search results are cached per (endpoint + request body) so that paging through
  * an already-executed search does not re-run it upstream.
@@ -120,7 +141,7 @@ export function searchCacheKey(endpoint: string, body: Record<string, unknown>):
     .sort()
     .map((key) => `${key}=${JSON.stringify(rest[key])}`)
     .join("&");
-  return `${endpoint}?${normalized}`;
+  return scopedCacheKey(`${endpoint}?${normalized}`);
 }
 
 /**
@@ -129,7 +150,7 @@ export function searchCacheKey(endpoint: string, body: Record<string, unknown>):
  * record writes and is the data agents re-read most.
  */
 export function invalidateDomain(appId: number | undefined, domain: string): void {
-  const prefix = appId === undefined ? `/${domain}` : `/${appId}/${domain}`;
+  const prefix = scopedCacheKey(appId === undefined ? `/${domain}` : `/${appId}/${domain}`);
   const removed = getSearchCache().deleteByPrefix(prefix) + getRecordCache().deleteByPrefix(prefix);
   if (removed > 0) logger.debug("cache invalidated", { prefix, removed });
 }
