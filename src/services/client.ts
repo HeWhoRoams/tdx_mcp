@@ -2,7 +2,7 @@ import { FALLBACK_TOKEN_LIFETIME_MS } from "../auth/sso-types.js";
 import axios, { AxiosError, AxiosInstance } from "axios";
 import { Agent as HttpAgent } from "node:http";
 import { Agent as HttpsAgent } from "node:https";
-import { getConfig } from "../config.js";
+import { getConfig, isServiceAuth } from "../config.js";
 import { increment, logger } from "./logger.js";
 import { RateLimiter } from "./rate-limiter.js";
 import { createServiceTokenStore, type TokenStore } from "./token-store.js";
@@ -117,7 +117,7 @@ export class TeamDynamixClient {
 
   private async login(): Promise<string> {
     const config = getConfig();
-    if (config.auth.method === "sso") {
+    if (!isServiceAuth(config.auth)) {
       // SSO needs a human at a browser. The server never starts one on its own.
       throw new TeamDynamixAuthError(`${SSO_ACTION_REQUIRED}: sign in with \`npm run login\`, then retry.`);
     }

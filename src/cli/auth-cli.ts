@@ -4,9 +4,9 @@ import {
   loginSsoUrl,
   SsoLoginError,
 } from "../auth/sso-login.js";
-import { createSsoLifecycle } from "../auth/sso-lifecycle.js";
+import { buildSsoLifecycle } from "../auth/sso-composition.js";
 import { getConfig } from "../config.js";
-import { createTokenStore, type StoredToken } from "../services/token-store.js";
+import type { StoredToken } from "../services/token-store.js";
 
 function promptHidden(question: string): Promise<string> {
   return new Promise((resolve) => {
@@ -49,7 +49,7 @@ export async function runAuthCli(command: string, args: string[]): Promise<numbe
   const config = getConfig();
   if (config.auth.method !== "sso") throw new SsoLoginError("The auth commands require TEAMDYNAMIX_AUTH_METHOD=sso.");
   const apiBaseUrl = config.apiBaseUrl;
-  const lifecycle = createSsoLifecycle(config, createTokenStore(), () => undefined);
+  const lifecycle = buildSsoLifecycle(config);
 
   try {
     if (command === "login") {

@@ -6,8 +6,6 @@ import { dirname, join } from "node:path";
 import { getConfig } from "../config.js";
 import { logger } from "./logger.js";
 import { resetCaches } from "./cache.js";
-import { bindingOf } from "../auth/identity-binding.js";
-import { ssoTokenPath } from "../auth/paths.js";
 
 export interface StoredToken {
   token: string;
@@ -141,10 +139,7 @@ export class SsoTokenStore implements TokenStore {
       try {
         const parsed = JSON.parse(readFileSync(this.path, "utf8")) as StoredToken;
         if (typeof parsed.token !== "string" || typeof parsed.expiresAtMs !== "number") return undefined;
-        if (this.lastUid !== undefined && parsed.uid !== undefined && parsed.uid !== this.lastUid) {
-          logger.info("signed-in TeamDynamix user changed; purging caches");
-          resetCaches();
-        }
+        this.purgeCachesIfUserChanged(parsed.uid);
         this.current = parsed;
         this.seenMtimeMs = mtimeMs;
         if (parsed.uid !== undefined) this.lastUid = parsed.uid;
@@ -157,18 +152,21 @@ export class SsoTokenStore implements TokenStore {
   }
 
   write(token: StoredToken): void {
-    const previousUid = this.lastUid;
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     const tmp = `${this.path}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(token), { mode: 0o600 });
     renameSync(tmp, this.path);
     this.current = token;
     this.seenMtimeMs = statSync(this.path).mtimeMs;
-    if (previousUid !== undefined && token.uid !== undefined && token.uid !== previousUid) {
+    this.purgeCachesIfUserChanged(token.uid);
+    if (token.uid !== undefined) this.lastUid = token.uid;
+  }
+
+  private purgeCachesIfUserChanged(uid: string | undefined): void {
+    if (this.lastUid !== undefined && uid !== undefined && uid !== this.lastUid) {
       logger.info("signed-in TeamDynamix user changed; purging caches");
       resetCaches();
     }
-    if (token.uid !== undefined) this.lastUid = token.uid;
   }
 
   clear(): void {
@@ -180,12 +178,6 @@ export class SsoTokenStore implements TokenStore {
       // Nothing stored.
     }
   }
-}
-
-export function createTokenStore(): TokenStore {
-  const config = getConfig();
-  if (config.auth.method === "sso") return new SsoTokenStore(ssoTokenPath(bindingOf(config.apiBaseUrl, config.auth.expectedUser)));
-  return createServiceTokenStore();
 }
 
 /** Token storage for admin and user logins. SSO state is built by the composition root instead. */

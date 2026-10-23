@@ -1,8 +1,7 @@
 import "dotenv/config";
 import { environmentLabel } from "../src/auth/sso-login.js";
-import { createSsoLifecycle } from "../src/auth/sso-lifecycle.js";
+import { buildSsoLifecycle } from "../src/auth/sso-composition.js";
 import { getConfig } from "../src/config.js";
-import { createTokenStore } from "../src/services/token-store.js";
 
 export function parseHermesCompatArgs(args: string[]): { realm: "sandbox" | "production"; allowProduction: boolean } {
   const realm = args[args.indexOf("--realm") + 1];
@@ -20,7 +19,7 @@ async function main(): Promise<void> {
     throw new Error("Hermes compatibility requires external SSO configuration.");
   }
   if (environmentLabel(config.apiBaseUrl) !== realm) throw new Error("Configured TeamDynamix realm does not match --realm.");
-  const lifecycle = createSsoLifecycle(config, createTokenStore(), () => undefined);
+  const lifecycle = buildSsoLifecycle(config);
   lifecycle.start();
   try {
     await lifecycle.authorization();

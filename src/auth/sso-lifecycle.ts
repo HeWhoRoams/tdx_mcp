@@ -129,7 +129,7 @@ export class SsoLifecycle implements SsoAuthorization {
       retries: this.auth.renewRetries,
       now: this.now,
       ...(overrides.sleep ? { sleep: overrides.sleep } : {}),
-      openSession: () => this.openRenewalSession(),
+      openSession: () => this.openSession({ interactive: false }),
       // Renewal must not change who is signed in; only an interactive login may.
       validateToken: (token, previous) => this.validate(token, previous, true),
       audit: (event, fields) => {
@@ -231,7 +231,7 @@ export class SsoLifecycle implements SsoAuthorization {
   }
 
   async login(): Promise<StoredToken> {
-    const session = await this.openInteractiveSession();
+    const session = await this.openSession({ interactive: true });
     try {
       return await this.accept(await session.mintToken(), "sso");
     } finally {
@@ -270,42 +270,27 @@ export class SsoLifecycle implements SsoAuthorization {
     });
   }
 
-  private openInteractiveSession(): Promise<SsoBrowserSession> {
+  /** One place that knows how each deployment opens a sign-in browser. */
+  private openSession({ interactive }: { interactive: boolean }): Promise<SsoBrowserSession> {
+    if (!interactive && this.overrides.openRenewalSession) return this.overrides.openRenewalSession();
+    const timeoutMs = interactive ? 5 * 60_000 : 30_000;
     if (this.auth.deployment === "external") {
       return openHermesCdpBrowserSession({
         apiBaseUrl: this.config.apiBaseUrl,
         cdpEndpoint: this.auth.cdpEndpoint!,
-        timeoutMs: 5 * 60_000,
-      });
-    }
-    return openLocalBrowserSession({
-      apiBaseUrl: this.config.apiBaseUrl,
-      browser: this.auth.browser,
-      profileDir: browserProfileDir(this.binding),
-      headless: false,
-      timeoutMs: 5 * 60_000,
-    });
-  }
-
-  private openRenewalSession(): Promise<SsoBrowserSession> {
-    if (this.overrides.openRenewalSession) return this.overrides.openRenewalSession();
-    if (this.auth.deployment === "external") {
-      return openHermesCdpBrowserSession({
-        apiBaseUrl: this.config.apiBaseUrl,
-        cdpEndpoint: this.auth.cdpEndpoint!,
-        timeoutMs: 30_000,
+        timeoutMs,
       });
     }
     const profileDir = browserProfileDir(this.binding);
-    if (!existsSync(profileDir)) {
+    if (!interactive && !existsSync(profileDir)) {
       throw new SsoPolicyError("No saved local SSO browser session is available. Run `npm run login` to sign in first.");
     }
     return openLocalBrowserSession({
       apiBaseUrl: this.config.apiBaseUrl,
       browser: this.auth.browser,
       profileDir,
-      headless: true,
-      timeoutMs: 30_000,
+      headless: !interactive,
+      timeoutMs,
     });
   }
 }

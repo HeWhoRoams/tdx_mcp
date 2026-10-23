@@ -206,6 +206,11 @@ export function getTdxHome(): string {
   return resolveTdxHome(parseCliEnv(), process.platform, homedir());
 }
 
+/** Service-account credentials (admin key or user login) as opposed to per-user SSO. */
+export function isServiceAuth(auth: Config["auth"]): auth is Exclude<Config["auth"], { method: "sso" }> {
+  return auth.method !== "sso";
+}
+
 export function isLoopbackHost(host: string): boolean {
   return host === "127.0.0.1" || host === "localhost" || host === "::1";
 }
