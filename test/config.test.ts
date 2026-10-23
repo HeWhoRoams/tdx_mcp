@@ -76,7 +76,7 @@ describe("getConfig", () => {
       HOST: "127.0.0.1",
       MCP_AUTH_TOKEN: "separate-mcp-secret",
     });
-    expect(getConfig().auth).toMatchObject({ method: "sso", deployment: "external", browserAdapter: "hermes-cdp" });
+    expect(getConfig().auth).toMatchObject({ method: "sso", deployment: "external" });
   });
 
   it.each([
@@ -111,5 +111,21 @@ describe("getConfig", () => {
     withEnv({ ...REQUIRED, MCP_ALLOWED_HOSTS: "a.example.com, b.example.com", MCP_ALLOWED_ORIGINS: "https://app.example.com" });
     expect(getConfig().server.allowedHosts).toEqual(["a.example.com", "b.example.com"]);
     expect(getConfig().server.allowedOrigins).toEqual(["https://app.example.com"]);
+  });
+});
+
+describe("state home resolution", () => {
+  it("is a pure function of the parsed environment", async () => {
+    const { resolveTdxHome, parseCliEnv, isLoopbackHost } = await import("../src/config.js");
+    const { join } = await import("node:path");
+    expect(resolveTdxHome({ TDX_HOME: "/x" }, "linux", "/h")).toBe("/x");
+    expect(resolveTdxHome({}, "linux", "/h")).toBe(join("/h", ".local", "state", "tdx-mcp"));
+    expect(resolveTdxHome({ XDG_STATE_HOME: "/s" }, "linux", "/h")).toBe(join("/s", "tdx-mcp"));
+    expect(resolveTdxHome({ LOCALAPPDATA: "C:/L" }, "win32", "C:/u")).toBe(join("C:/L", "tdx-mcp"));
+    expect(resolveTdxHome({}, "win32", "/u")).toBe(join("/u", "AppData", "Local", "tdx-mcp"));
+    expect(parseCliEnv({ TDX_HOME: "  /y  ", TEAMDYNAMIX_SSO_EXPECTED_USER: " " }).TDX_HOME).toBe("/y");
+    expect(parseCliEnv({ TEAMDYNAMIX_SSO_EXPECTED_USER: " " }).TEAMDYNAMIX_SSO_EXPECTED_USER).toBeUndefined();
+    expect(isLoopbackHost("::1")).toBe(true);
+    expect(isLoopbackHost("0.0.0.0")).toBe(false);
   });
 });

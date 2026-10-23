@@ -37,11 +37,12 @@ const RawEnvSchema = z.object({
   TEAMDYNAMIX_SSO_BROWSER: z.enum(["msedge", "chrome", "chromium"]).default("msedge"),
   /** local opens an owner-controlled profile; external attaches only to the configured Hermes CDP endpoint. */
   TEAMDYNAMIX_MCP_DEPLOYMENT: z.enum(["local", "external"]).default("local"),
-  TEAMDYNAMIX_SSO_BROWSER_ADAPTER: z.enum(["local", "hermes-cdp"]).default("local"),
   TEAMDYNAMIX_SSO_CDP_ENDPOINT: z.string().url().optional(),
   TEAMDYNAMIX_SSO_RENEW_LEAD_MS: IntFromEnv(60 * 60 * 1000, 60_000, 23 * 60 * 60 * 1000),
   TEAMDYNAMIX_SSO_RENEW_RETRIES: IntFromEnv(3, 0, 5),
   TDX_HOME: z.string().optional(),
+  LOCALAPPDATA: z.string().optional(),
+  XDG_STATE_HOME: z.string().optional(),
   TEAMDYNAMIX_READ_ONLY: BooleanFromEnv,
   TEAMDYNAMIX_TOKEN_CACHE: z.enum(["memory", "file"]).default("memory"),
 
@@ -92,7 +93,6 @@ export interface Config {
         expectedUser?: string;
         deployment: "local" | "external";
         browser: "msedge" | "chrome" | "chromium";
-        browserAdapter: "local" | "hermes-cdp";
         cdpEndpoint?: string;
         renewLeadMs: number;
         renewRetries: number;
@@ -143,8 +143,37 @@ export function resolveApiBaseUrl(raw: string): string {
 }
 
 /** Resolves the API root from the environment alone, for CLI scripts that skip full validation. */
+/**
+ * The environment the login CLI and scripts need, read without the full credential
+ * validation (they must start with no admin key or password configured). Values are
+ * trimmed strings; this and `buildConfig` are the only readers of `process.env`.
+ */
+const CliEnvSchema = z.object({
+  TEAMDYNAMIX_BASE_URL: z.string().optional(),
+  TEAMDYNAMIX_AUTH_METHOD: z.string().optional(),
+  TEAMDYNAMIX_SSO_EXPECTED_USER: z.string().optional(),
+  TEAMDYNAMIX_BEID: z.string().optional(),
+  TEAMDYNAMIX_WS_KEY: z.string().optional(),
+  TEAMDYNAMIX_USERNAME: z.string().optional(),
+  TEAMDYNAMIX_PASSWORD: z.string().optional(),
+  TDX_HOME: z.string().optional(),
+  LOCALAPPDATA: z.string().optional(),
+  XDG_STATE_HOME: z.string().optional(),
+});
+export type CliEnv = z.infer<typeof CliEnvSchema>;
+
+export function parseCliEnv(env: NodeJS.ProcessEnv = process.env): CliEnv {
+  const parsed = CliEnvSchema.parse(env);
+  return Object.fromEntries(
+    Object.entries(parsed).flatMap(([key, value]) => {
+      const trimmed = value?.trim();
+      return trimmed ? [[key, trimmed]] : [];
+    })
+  ) as CliEnv;
+}
+
 export function getApiBaseUrl(): string {
-  const raw = process.env.TEAMDYNAMIX_BASE_URL;
+  const raw = parseCliEnv().TEAMDYNAMIX_BASE_URL;
   if (!raw) {
     throw new Error(
       "TEAMDYNAMIX_BASE_URL environment variable is required (e.g. https://yourorg.teamdynamix.com)."
@@ -162,30 +191,22 @@ export function resolveWebBaseUrl(apiBaseUrl: string): string {
 }
 
 /** Where per-user state (SSO token files, the dedicated login browser profile) lives. */
-export function getTdxHome(): string {
-  const explicit = process.env.TDX_HOME?.trim();
-  if (explicit) return explicit;
-  if (process.platform === "win32") {
-    return join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "tdx-mcp");
-  }
-  return join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "tdx-mcp");
+export function resolveTdxHome(
+  env: Pick<CliEnv, "TDX_HOME" | "LOCALAPPDATA" | "XDG_STATE_HOME">,
+  platform: NodeJS.Platform,
+  home: string
+): string {
+  if (env.TDX_HOME) return env.TDX_HOME;
+  if (platform === "win32") return join(env.LOCALAPPDATA ?? join(home, "AppData", "Local"), "tdx-mcp");
+  return join(env.XDG_STATE_HOME ?? join(home, ".local", "state"), "tdx-mcp");
 }
 
-/** SSO settings for the login CLI, which runs without the full credential validation. */
-export function getSsoCliSettings(): {
-  expectedUser?: string;
-  browser: "msedge" | "chrome" | "chromium";
-  deployment: "local" | "external";
-  cdpEndpoint?: string;
-} {
-  const browser = process.env.TEAMDYNAMIX_SSO_BROWSER;
-  const expectedUser = process.env.TEAMDYNAMIX_SSO_EXPECTED_USER?.trim();
-  return {
-    browser: browser === "chrome" || browser === "chromium" ? browser : "msedge",
-    deployment: process.env.TEAMDYNAMIX_MCP_DEPLOYMENT === "external" ? "external" : "local",
-    ...(process.env.TEAMDYNAMIX_SSO_CDP_ENDPOINT ? { cdpEndpoint: process.env.TEAMDYNAMIX_SSO_CDP_ENDPOINT } : {}),
-    ...(expectedUser ? { expectedUser } : {}),
-  };
+export function getTdxHome(): string {
+  return resolveTdxHome(parseCliEnv(), process.platform, homedir());
+}
+
+export function isLoopbackHost(host: string): boolean {
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
 }
 
 function splitList(value: string | undefined): string[] {
@@ -229,6 +250,12 @@ function buildConfig(env: NodeJS.ProcessEnv): Config {
     throw new ConfigError(`Invalid TeamDynamix MCP server configuration:\n${details.join("\n")}`);
   }
   const raw = parsed.data;
+
+  if (env.TEAMDYNAMIX_SSO_BROWSER_ADAPTER !== undefined) {
+    throw new ConfigError(
+      "TEAMDYNAMIX_SSO_BROWSER_ADAPTER was removed. Use TEAMDYNAMIX_MCP_DEPLOYMENT=local|external instead."
+    );
+  }
 
   const hasAdmin = Boolean(raw.TEAMDYNAMIX_BEID && raw.TEAMDYNAMIX_WS_KEY);
   const hasUser = Boolean(raw.TEAMDYNAMIX_USERNAME && raw.TEAMDYNAMIX_PASSWORD);
@@ -275,8 +302,7 @@ function buildConfig(env: NodeJS.ProcessEnv): Config {
     }
     try {
       const parsedEndpoint = new URL(raw.TEAMDYNAMIX_SSO_CDP_ENDPOINT);
-      const endpointLoopback = parsedEndpoint.hostname === "127.0.0.1" || parsedEndpoint.hostname === "localhost" || parsedEndpoint.hostname === "::1";
-      if (!endpointLoopback || !["http:", "https:", "ws:", "wss:"].includes(parsedEndpoint.protocol)) {
+      if (!isLoopbackHost(parsedEndpoint.hostname) || !["http:", "https:", "ws:", "wss:"].includes(parsedEndpoint.protocol)) {
         throw new Error("not loopback");
       }
       cdpEndpoint = parsedEndpoint.toString().replace(/\/$/, "");
@@ -294,7 +320,6 @@ function buildConfig(env: NodeJS.ProcessEnv): Config {
         method: "sso",
         deployment: raw.TEAMDYNAMIX_MCP_DEPLOYMENT,
         browser: raw.TEAMDYNAMIX_SSO_BROWSER,
-        browserAdapter: externalSso ? "hermes-cdp" : raw.TEAMDYNAMIX_SSO_BROWSER_ADAPTER,
         ...(cdpEndpoint ? { cdpEndpoint } : {}),
         renewLeadMs: raw.TEAMDYNAMIX_SSO_RENEW_LEAD_MS,
         renewRetries: raw.TEAMDYNAMIX_SSO_RENEW_RETRIES,
@@ -305,7 +330,7 @@ function buildConfig(env: NodeJS.ProcessEnv): Config {
       : { method: "user", username: raw.TEAMDYNAMIX_USERNAME!, password: raw.TEAMDYNAMIX_PASSWORD! };
 
   const host = raw.HOST;
-  const isLoopback = host === "127.0.0.1" || host === "localhost" || host === "::1";
+  const isLoopback = isLoopbackHost(host);
 
   if (raw.TRANSPORT === "http" && !isLoopback && !raw.MCP_AUTH_TOKEN) {
     throw new ConfigError(
@@ -316,12 +341,6 @@ function buildConfig(env: NodeJS.ProcessEnv): Config {
   if (isSso && raw.TRANSPORT === "http" && !isLoopback) {
     throw new ConfigError(
       "TEAMDYNAMIX_AUTH_METHOD=sso is single-user and local-only. Use stdio, or bind HTTP to a loopback HOST."
-    );
-  }
-
-  if (isSso && !externalSso && raw.TEAMDYNAMIX_SSO_BROWSER_ADAPTER !== "local") {
-    throw new ConfigError(
-      "TEAMDYNAMIX_SSO_BROWSER_ADAPTER=hermes-cdp is not implemented yet. Use local for this deployment."
     );
   }
 

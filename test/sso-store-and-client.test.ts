@@ -77,7 +77,6 @@ describe("sso config", () => {
     const auth = getConfig().auth;
     expect(auth).toMatchObject({
       method: "sso",
-      browserAdapter: "local",
       renewLeadMs: 60 * 60 * 1000,
       renewRetries: 3,
     });
@@ -101,9 +100,9 @@ describe("sso config", () => {
     env({ TRANSPORT: "http", HOST: "0.0.0.0", MCP_AUTH_TOKEN: "x" });
     expect(() => getConfig()).toThrow(/local-only/);
   });
-  it("reserves the Hermes browser adapter for its separate deployment plan", () => {
+  it("rejects the removed browser-adapter variable and names its replacement", () => {
     env({ TEAMDYNAMIX_SSO_BROWSER_ADAPTER: "hermes-cdp" });
-    expect(() => getConfig()).toThrow(/not implemented/);
+    expect(() => getConfig()).toThrow(/TEAMDYNAMIX_MCP_DEPLOYMENT/);
   });
 });
 

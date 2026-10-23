@@ -10,7 +10,9 @@ import "dotenv/config";
 import { type AxiosInstance } from "axios";
 import { ssoTokenPath } from "../src/auth/paths.js";
 import { SsoTokenStore } from "../src/services/token-store.js";
-import { getApiBaseUrl } from "../src/config.js";
+import { getApiBaseUrl, parseCliEnv } from "../src/config.js";
+
+const cliEnv = () => parseCliEnv();
 
 function requireJwt(value: unknown): string {
   const token = typeof value === "string" ? value.trim() : String(value);
@@ -23,12 +25,12 @@ function requireJwt(value: unknown): string {
 }
 
 export function getAuthMethod(): "admin" | "user" | "sso" {
-  if (process.env.TEAMDYNAMIX_AUTH_METHOD?.toLowerCase() === "sso") return "sso";
-  const explicit = process.env.TEAMDYNAMIX_AUTH_METHOD?.toLowerCase();
-  if (explicit === "admin" && process.env.TEAMDYNAMIX_BEID && process.env.TEAMDYNAMIX_WS_KEY) return "admin";
-  if (explicit === "user"  && process.env.TEAMDYNAMIX_USERNAME && process.env.TEAMDYNAMIX_PASSWORD) return "user";
-  if (process.env.TEAMDYNAMIX_BEID && process.env.TEAMDYNAMIX_WS_KEY) return "admin";
-  if (process.env.TEAMDYNAMIX_USERNAME && process.env.TEAMDYNAMIX_PASSWORD) return "user";
+  if (cliEnv().TEAMDYNAMIX_AUTH_METHOD?.toLowerCase() === "sso") return "sso";
+  const explicit = cliEnv().TEAMDYNAMIX_AUTH_METHOD?.toLowerCase();
+  if (explicit === "admin" && cliEnv().TEAMDYNAMIX_BEID && cliEnv().TEAMDYNAMIX_WS_KEY) return "admin";
+  if (explicit === "user"  && cliEnv().TEAMDYNAMIX_USERNAME && cliEnv().TEAMDYNAMIX_PASSWORD) return "user";
+  if (cliEnv().TEAMDYNAMIX_BEID && cliEnv().TEAMDYNAMIX_WS_KEY) return "admin";
+  if (cliEnv().TEAMDYNAMIX_USERNAME && cliEnv().TEAMDYNAMIX_PASSWORD) return "user";
   throw new Error(
     "No credentials found.\n" +
     "Set TEAMDYNAMIX_BEID + TEAMDYNAMIX_WS_KEY  (admin service account)\n" +
@@ -39,7 +41,7 @@ export function getAuthMethod(): "admin" | "user" | "sso" {
 
 export async function authenticate(http: AxiosInstance, method: "admin" | "user" | "sso"): Promise<string> {
   if (method === "sso") {
-    const stored = new SsoTokenStore(ssoTokenPath(getApiBaseUrl(), process.env.TEAMDYNAMIX_SSO_EXPECTED_USER)).read();
+    const stored = new SsoTokenStore(ssoTokenPath(getApiBaseUrl(), cliEnv().TEAMDYNAMIX_SSO_EXPECTED_USER)).read();
     if (!stored || stored.expiresAtMs <= Date.now()) {
       throw new Error("No valid SSO sign-in saved for this environment. Run: npm run login");
     }
@@ -49,8 +51,8 @@ export async function authenticate(http: AxiosInstance, method: "admin" | "user"
     const res = await http.post<string>(
       "/auth/loginadmin",
       {
-        BEID: process.env.TEAMDYNAMIX_BEID,
-        WebServicesKey: process.env.TEAMDYNAMIX_WS_KEY,
+        BEID: cliEnv().TEAMDYNAMIX_BEID,
+        WebServicesKey: cliEnv().TEAMDYNAMIX_WS_KEY,
       },
       { maxRedirects: 0 }
     );
@@ -59,8 +61,8 @@ export async function authenticate(http: AxiosInstance, method: "admin" | "user"
   const res = await http.post<string>(
     "/auth/login",
     {
-      username: process.env.TEAMDYNAMIX_USERNAME,
-      password: process.env.TEAMDYNAMIX_PASSWORD,
+      username: cliEnv().TEAMDYNAMIX_USERNAME,
+      password: cliEnv().TEAMDYNAMIX_PASSWORD,
     },
     { maxRedirects: 0 }
   );
