@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Run one loopback TDX MCP service per Hermes workspace, acting only as that workspace's assigned CMU user through SSO and renewing TeamDynamix tokens without routine daily interaction.
+**Goal:** Run one loopback TDX MCP service per Hermes workspace, acting only as that workspace's assigned user through SSO and renewing TeamDynamix tokens without routine daily interaction.
 
 **Architecture:** This is centrally managed but deliberately not a shared multi-user HTTP service. Each persistent Hermes workspace owns one expected user, one loopback MCP endpoint protected by a separate MCP access secret, one realm-specific TDX token store, and one existing CDP Chrome session. It reuses the local plan's SSO lifecycle through a Hermes CDP browser adapter; the server holds the TDX token and callers never forward it.
 
@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- This deployment is one Hermes workspace, one assigned CMU user, one loopback MCP service; do not implement shared multi-user JWT forwarding.
+- This deployment is one Hermes workspace, one assigned user, one loopback MCP service; do not implement shared multi-user JWT forwarding.
 - The repository supports `admin`, `user`, and `sso`, but this deployment is implemented, tested, and approved for explicit `TEAMDYNAMIX_AUTH_METHOD=sso` only.
 - Bind to `127.0.0.1` or `::1`, require a distinct `MCP_AUTH_TOKEN`, and use the existing stateless Streamable HTTP POST transport—never SSE.
 - Store the TDX JWT only in owner-readable realm state; it must never appear in MCP request headers, chat, logs, browser output, or configuration.

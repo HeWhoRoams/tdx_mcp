@@ -5,7 +5,7 @@ Terms used to describe the server's authentication and deployment model.
 ## Authentication and deployment
 
 **Hermes workspace**:
-A persistent Hermes execution environment assigned to exactly one CMU user. Its browser profile, stored credentials, and MCP activity represent that user's TeamDynamix identity.
+A persistent Hermes execution environment assigned to exactly one user. Its browser profile, stored credentials, and MCP activity represent that user's TeamDynamix identity.
 _Avoid_: shared Hermes instance, multi-user Hermes server
 
 **Local deployment**:
@@ -37,7 +37,7 @@ The existing CDP-controlled Chrome instance that belongs to a single Hermes work
 _Avoid_: shared browser, separate renewal browser
 
 **Expected user**:
-The CMU email address or username assigned to an SSO deployment; a minted token is accepted only when TeamDynamix identifies it as that person.
+The email address or username assigned to an SSO deployment; a minted token is accepted only when TeamDynamix identifies it as that person.
 _Avoid_: inferred user, mutable server identity
 
 **MCP access secret**:

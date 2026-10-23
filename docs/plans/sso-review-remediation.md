@@ -214,7 +214,7 @@ export function bindingDigest(b: IdentityBinding): string; // one implementation
 - [x] The gate fails if the sets differ, the second mint returns the same JWT fingerprint, or the UID changes.
 - [x] Add `test/hermes-sso-compat.test.ts` covering argument parsing, the production guard, the set comparison, and that output has no URL or JWT.
 
-**R4.3 External `logout --all` (G5).** `signOut({ full })` returns `{ removedLocalProfile: boolean; operatorAction?: string }`. For an external deployment, the CLI prints the operator action ("Ask the Hermes operator to sign the workspace browser out of CMU SSO") and exits 0. Test it.
+**R4.3 External `logout --all` (G5).** `signOut({ full })` returns `{ removedLocalProfile: boolean; operatorAction?: string }`. For an external deployment, the CLI prints the operator action ("Ask the Hermes operator to sign the workspace browser out of SSO") and exits 0. Test it.
 
 **R4.4 Missing test files (G6).** `test/sso-lifecycle.test.ts` (start/stop, single flight, D1, P6), `test/http-auth.test.ts` (loopback-only SSO; MCP access secret rejected before dispatch; no TDX token forwarded), and `test/client.test.ts` additions (admin/user never construct the composition root; SSO client uses only `SsoAuthorization`).
 

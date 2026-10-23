@@ -1,6 +1,6 @@
 # One user and one browser session per Hermes workspace
 
-Each centrally managed deployment runs one Hermes workspace and one loopback TDX MCP server for one assigned CMU user. The server holds that user's TeamDynamix token, binds it to an expected user, and uses the workspace's existing CDP Chrome session as the opt-in renewal authority; a separate MCP access secret authorizes callers. This avoids cross-user credential state while allowing silent renewal when CMU SSO policy permits it.
+Each centrally managed deployment runs one Hermes workspace and one loopback TDX MCP server for one assigned user. The server holds that user's TeamDynamix token, binds it to an expected user, and uses the workspace's existing CDP Chrome session as the opt-in renewal authority; a separate MCP access secret authorizes callers. This avoids cross-user credential state while allowing silent renewal when SSO policy permits it.
 
 Each TeamDynamix realm is deployed with isolated browser and token state. The server is loopback-only; externally hosted multi-user access is a separate architecture.
 

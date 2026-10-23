@@ -315,7 +315,7 @@ export class SsoLifecycle implements SsoAuthorization {
     return {
       removedLocalProfile,
       ...(full && this.auth.deployment === "external"
-        ? { operatorAction: "Ask the Hermes operator to sign the workspace browser out of CMU SSO; this server cannot." }
+        ? { operatorAction: "Ask the Hermes operator to sign the workspace browser out of SSO; this server cannot." }
         : {}),
     };
   }
