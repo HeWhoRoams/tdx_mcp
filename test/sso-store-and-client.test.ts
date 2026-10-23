@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import axios, { AxiosError, AxiosHeaders } from "axios";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { bindingOf } from "../src/auth/identity-binding.js";
 import { browserProfileDir, ssoTokenPath } from "../src/auth/paths.js";
 import { ConfigError, getConfig, resetConfig } from "../src/config.js";
 import { getReferenceCache, resetCaches } from "../src/services/cache.js";
@@ -45,7 +46,7 @@ function jwt(expSecondsFromNow: number): string {
 }
 
 function saveToken(token: StoredToken) {
-  const path = ssoTokenPath(API);
+  const path = ssoTokenPath(bindingOf(API));
   mkdirSync(join(path, ".."), { recursive: true });
   writeFileSync(path, JSON.stringify(token));
   return path;
@@ -108,19 +109,19 @@ describe("sso config", () => {
 
 describe("SsoTokenStore", () => {
   it("reloads when the file changes and purges caches when the user changes", () => {
-    const store = new SsoTokenStore(ssoTokenPath(API));
+    const store = new SsoTokenStore(ssoTokenPath(bindingOf(API)));
     expect(store.read()).toBeUndefined();
     store.write({ token: jwt(3600), expiresAtMs: Date.now() + 3_600_000, uid: "uid-1" });
     expect(store.read()?.uid).toBe("uid-1");
     getReferenceCache().set("people/lookup", "uid-1 data", 60_000);
     // another process (npm run login) replaces the file with a different user
-    const other = new SsoTokenStore(ssoTokenPath(API));
+    const other = new SsoTokenStore(ssoTokenPath(bindingOf(API)));
     other.write({ token: jwt(3600), expiresAtMs: Date.now() + 3_600_000, uid: "uid-2" });
     expect(store.read()?.uid).toBe("uid-2");
     expect(getReferenceCache().getAllowStale("people/lookup")).toBeUndefined();
   });
   it("purges caches when this process writes a token for a different user", () => {
-    const store = new SsoTokenStore(ssoTokenPath(API));
+    const store = new SsoTokenStore(ssoTokenPath(bindingOf(API)));
     store.write({ token: jwt(3600), expiresAtMs: Date.now() + 3_600_000, uid: "uid-1" });
     getReferenceCache().set("people/lookup", "uid-1 data", 60_000);
 
@@ -129,8 +130,8 @@ describe("SsoTokenStore", () => {
     expect(getReferenceCache().getAllowStale("people/lookup")).toBeUndefined();
   });
   it("keeps separate files for sandbox and production", () => {
-    expect(ssoTokenPath(API)).not.toBe(ssoTokenPath("https://example.teamdynamix.com/TDWebApi/api"));
-    expect(browserProfileDir(API)).not.toBe(browserProfileDir("https://example.teamdynamix.com/TDWebApi/api"));
+    expect(ssoTokenPath(bindingOf(API))).not.toBe(ssoTokenPath(bindingOf("https://example.teamdynamix.com/TDWebApi/api")));
+    expect(browserProfileDir(bindingOf(API))).not.toBe(browserProfileDir(bindingOf("https://example.teamdynamix.com/TDWebApi/api")));
   });
 });
 
@@ -174,5 +175,30 @@ describe("sso client", () => {
     saveToken({ token: jwt(-60), expiresAtMs: Date.now() - 60_000, uid: "u" });
     stub(async () => ({ status: 200, data: {} }), async () => ({ status: 200 }));
     await expect(getClient().request("/people")).rejects.toThrow(/expired/);
+  });
+});
+
+describe("cache namespace", () => {
+  it("separates realms, expected users and signed-in people, and never shares an unverified identity", async () => {
+    const { scopedCacheKey, setCacheNamespace } = await import("../src/services/cache.js");
+    const { bindingDigest, bindingOf } = await import("../src/auth/identity-binding.js");
+    expect(scopedCacheKey("k")).toBe("k"); // no provider: shared service identity
+    try {
+      let ns: string | undefined;
+      setCacheNamespace(() => ns);
+      expect(scopedCacheKey("k")).toBe("sso:unverified:k");
+      const sandbox = bindingOf("https://x.teamdynamix.com/SBTDWebApi/api");
+      const prod = bindingOf("https://x.teamdynamix.com/TDWebApi/api");
+      expect(bindingDigest(sandbox)).not.toBe(bindingDigest(prod));
+      expect(bindingDigest(bindingOf(sandbox.realm, "A@x.edu"))).toBe(bindingDigest(bindingOf(sandbox.realm + "/", "a@x.edu")));
+      ns = `${bindingDigest(sandbox)}:u1`;
+      const forU1 = scopedCacheKey("k");
+      ns = `${bindingDigest(sandbox)}:u2`;
+      const forU2 = scopedCacheKey("k");
+      ns = `${bindingDigest(prod)}:u1`;
+      expect(new Set([forU1, forU2, scopedCacheKey("k")]).size).toBe(3);
+    } finally {
+      setCacheNamespace(undefined);
+    }
   });
 });

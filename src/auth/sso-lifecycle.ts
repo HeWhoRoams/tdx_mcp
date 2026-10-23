@@ -1,6 +1,7 @@
 import { RealmLock } from "./realm-lock.js";
 import axios from "axios";
 import { existsSync, rmSync } from "node:fs";
+import { bindingDigest, bindingOf, type IdentityBinding } from "./identity-binding.js";
 import { browserProfileDir } from "./paths.js";
 import { openHermesCdpBrowserSession } from "./hermes-cdp-browser.js";
 import { openLocalBrowserSession, type SsoBrowserSession } from "./sso-browser.js";
@@ -87,6 +88,7 @@ export class SsoLifecycle implements SsoAuthorization {
   private readonly now: () => number;
   private lastProbeOk: { token: string; atMs: number } | undefined;
   private readonly overrides: SsoLifecycleOverrides;
+  private readonly binding: IdentityBinding;
 
   constructor(
     config: Config,
@@ -95,6 +97,7 @@ export class SsoLifecycle implements SsoAuthorization {
     overrides: SsoLifecycleOverrides = {}
   ) {
     this.config = config;
+    this.binding = bindingOf(config.apiBaseUrl, (config.auth as { expectedUser?: string }).expectedUser);
     this.overrides = overrides;
     this.now = overrides.now ?? Date.now;
     this.probe = overrides.probe ?? defaultProbe(config.apiBaseUrl);
@@ -174,6 +177,15 @@ export class SsoLifecycle implements SsoAuthorization {
     return "unknown";
   }
 
+  /**
+   * Isolates cached data per realm, expected user and signed-in person. Undefined until a
+   * validated token is stored, so nothing is attributed to an unverified identity.
+   */
+  cacheNamespace(): string | undefined {
+    const uid = this.state.currentToken()?.uid;
+    return uid ? `${bindingDigest(this.binding)}:${uid}` : undefined;
+  }
+
   status(): SsoStatus {
     const status = this.state.status();
     const token = "token" in status ? status.token : undefined;
@@ -215,7 +227,7 @@ export class SsoLifecycle implements SsoAuthorization {
     this.state.signOut();
     this.lastProbeOk = undefined;
     if (full && this.auth.deployment === "local") {
-      rmSync(browserProfileDir(this.config.apiBaseUrl, this.auth.expectedUser), { recursive: true, force: true });
+      rmSync(browserProfileDir(this.binding), { recursive: true, force: true });
     }
     this.audit("logout", { full, deployment: this.auth.deployment });
   }
@@ -240,7 +252,7 @@ export class SsoLifecycle implements SsoAuthorization {
     return openLocalBrowserSession({
       apiBaseUrl: this.config.apiBaseUrl,
       browser: this.auth.browser,
-      profileDir: browserProfileDir(this.config.apiBaseUrl, this.auth.expectedUser),
+      profileDir: browserProfileDir(this.binding),
       headless: false,
       timeoutMs: 5 * 60_000,
     });
@@ -255,7 +267,7 @@ export class SsoLifecycle implements SsoAuthorization {
         timeoutMs: 30_000,
       });
     }
-    const profileDir = browserProfileDir(this.config.apiBaseUrl, this.auth.expectedUser);
+    const profileDir = browserProfileDir(this.binding);
     if (!existsSync(profileDir)) {
       throw new SsoPolicyError("No saved local SSO browser session is available. Run `npm run login` to sign in first.");
     }

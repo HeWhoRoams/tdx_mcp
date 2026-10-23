@@ -1,5 +1,4 @@
 import { getConfig } from "../config.js";
-import { createHash } from "node:crypto";
 import { logger } from "./logger.js";
 
 interface Entry<T> {
@@ -111,15 +110,20 @@ export function resetCaches(): void {
   recordCache = undefined;
 }
 
-/** Cache keys are isolated per verified deployment identity before data enters a cache. */
+let cacheNamespace: (() => string | undefined) | undefined;
+
+/**
+ * Registers who the cache belongs to. Only SSO registers one; without it keys are used as-is
+ * (a single shared service identity). A registered namespace that has no verified identity yet
+ * maps to "unverified", which can never collide with a real person's entries.
+ */
+export function setCacheNamespace(provider: (() => string | undefined) | undefined): void {
+  cacheNamespace = provider;
+}
+
 export function scopedCacheKey(key: string): string {
-  // Pure cache-key utilities are also used before runtime configuration exists.
-  let config;
-  try { config = getConfig(); } catch { return key; }
-  if (config.auth.method !== "sso") return key;
-  const identity = `${config.apiBaseUrl.toLowerCase()}|${config.auth.expectedUser?.toLowerCase() ?? "unbound"}`;
-  const namespace = createHash("sha256").update(identity).digest("hex").slice(0, 12);
-  return `sso:${namespace}:${key}`;
+  if (!cacheNamespace) return key;
+  return `sso:${cacheNamespace() ?? "unverified"}:${key}`;
 }
 
 /**

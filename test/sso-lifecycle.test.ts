@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import axios from "axios";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { bindingOf } from "../src/auth/identity-binding.js";
 import { ssoTokenPath } from "../src/auth/paths.js";
 import type { SsoBrowserSession } from "../src/auth/sso-browser.js";
 import { createSsoLifecycle, type SsoProbe } from "../src/auth/sso-lifecycle.js";
@@ -31,7 +32,7 @@ function setup(overrides: { probe?: SsoProbe; openRenewalSession?: () => Promise
   resetConfig();
   resetCaches();
   const config = getConfig();
-  const store = new SsoTokenStore(ssoTokenPath(config.apiBaseUrl));
+  const store = new SsoTokenStore(ssoTokenPath(bindingOf(config.apiBaseUrl)));
   const audit = vi.fn();
   const lifecycle = createSsoLifecycle(config, store, audit, { sleep: async () => undefined, ...overrides });
   return { lifecycle, store, audit };
@@ -105,7 +106,7 @@ describe("handleUnauthorized", () => {
     const older = stored(jwt(7200), 7200);
     store.write(older);
     // another process (or a renewal) replaces the token while the old request is in flight
-    const path = ssoTokenPath(getConfig().apiBaseUrl);
+    const path = ssoTokenPath(bindingOf(getConfig().apiBaseUrl));
     new SsoTokenStore(path).write(stored(jwt(7200) + "new", 7200));
     const later = new Date(Date.now() + 5_000); // make the change visible to the mtime check on any filesystem
     utimesSync(path, later, later);

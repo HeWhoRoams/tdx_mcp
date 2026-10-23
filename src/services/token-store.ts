@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { getConfig } from "../config.js";
 import { logger } from "./logger.js";
 import { resetCaches } from "./cache.js";
+import { bindingOf } from "../auth/identity-binding.js";
 import { ssoTokenPath } from "../auth/paths.js";
 
 export interface StoredToken {
@@ -182,7 +183,7 @@ export class SsoTokenStore implements TokenStore {
 
 export function createTokenStore(): TokenStore {
   const config = getConfig();
-  if (config.auth.method === "sso") return new SsoTokenStore(ssoTokenPath(config.apiBaseUrl, config.auth.expectedUser));
+  if (config.auth.method === "sso") return new SsoTokenStore(ssoTokenPath(bindingOf(config.apiBaseUrl, config.auth.expectedUser)));
   return config.tokenCache === "file"
     ? new FileTokenStore(`${config.apiBaseUrl}|${config.authCacheKey}`)
     : new MemoryTokenStore();

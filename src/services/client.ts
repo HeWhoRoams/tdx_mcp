@@ -5,7 +5,7 @@ import { getConfig } from "../config.js";
 import { increment, logger } from "./logger.js";
 import { RateLimiter } from "./rate-limiter.js";
 import { createTokenStore, type TokenStore } from "./token-store.js";
-import { getReferenceCache, getRecordCache, scopedCacheKey } from "./cache.js";
+import { getReferenceCache, getRecordCache, scopedCacheKey, setCacheNamespace } from "./cache.js";
 import { ssoLoginRequiredMessage } from "../auth/sso-login.js";
 import { createSsoLifecycle, type SsoLifecycle } from "../auth/sso-lifecycle.js";
 import { SSO_ACTION_REQUIRED, SSO_RENEWAL_UNAVAILABLE, SsoUnavailableError } from "../auth/sso-errors.js";
@@ -120,6 +120,8 @@ export class TeamDynamixClient {
           logger.info("sso lifecycle", { event, realm: config.apiBaseUrl, expectedUser: config.auth.method === "sso" ? config.auth.expectedUser : undefined, ...fields }),
         { probe: (token) => this.probeGetUser(token) }
       );
+      const lifecycle = this.ssoLifecycle;
+      setCacheNamespace(() => lifecycle.cacheNamespace());
       this.ssoLifecycle.start();
     }
   }
@@ -401,6 +403,7 @@ export class TeamDynamixClient {
   /** Releases sockets so short-lived processes exit promptly. */
   destroy(): void {
     this.ssoLifecycle?.stop();
+    if (this.ssoLifecycle) setCacheNamespace(undefined);
     this.httpAgent.destroy();
     this.httpsAgent.destroy();
   }

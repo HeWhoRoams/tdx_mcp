@@ -8,6 +8,7 @@
 
 import "dotenv/config";
 import { type AxiosInstance } from "axios";
+import { bindingOf } from "../src/auth/identity-binding.js";
 import { ssoTokenPath } from "../src/auth/paths.js";
 import { SsoTokenStore } from "../src/services/token-store.js";
 import { getApiBaseUrl, parseCliEnv } from "../src/config.js";
@@ -41,7 +42,7 @@ export function getAuthMethod(): "admin" | "user" | "sso" {
 
 export async function authenticate(http: AxiosInstance, method: "admin" | "user" | "sso"): Promise<string> {
   if (method === "sso") {
-    const stored = new SsoTokenStore(ssoTokenPath(getApiBaseUrl(), cliEnv().TEAMDYNAMIX_SSO_EXPECTED_USER)).read();
+    const stored = new SsoTokenStore(ssoTokenPath(bindingOf(getApiBaseUrl(), cliEnv().TEAMDYNAMIX_SSO_EXPECTED_USER))).read();
     if (!stored || stored.expiresAtMs <= Date.now()) {
       throw new Error("No valid SSO sign-in saved for this environment. Run: npm run login");
     }
