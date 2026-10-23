@@ -14,13 +14,12 @@ import { SsoRenewalManager } from "./sso-renewal.js";
 import {
   CredentialState,
   FileStatePersistence,
-  MemoryStatePersistence,
   type BlockReason,
   type CredentialStatePersistence,
   type CredentialStatus,
 } from "./credential-state.js";
-import { getTdxHome, type Config } from "../config.js";
-import { SsoTokenStore, type StoredToken, type TokenStore } from "../services/token-store.js";
+import { getTdxHome, type SsoConfig } from "../config.js";
+import { SsoTokenStore, type StoredToken } from "../services/token-store.js";
 
 export interface SsoStatus {
   realm: string;
@@ -97,10 +96,10 @@ function defaultProbe(apiBaseUrl: string): SsoProbe {
 /** Deep lifecycle module for one realm and Expected user. */
 export class SsoLifecycle implements SsoAuthorization {
   private readonly issued = new Map<string, string>();
-  private readonly renewalLock: RealmLock | undefined;
+  private readonly renewalLock: RealmLock;
   private readonly renewal: SsoRenewalManager;
-  private readonly auth: Extract<Config["auth"], { method: "sso" }>;
-  private readonly config: Config;
+  private readonly auth: SsoConfig["auth"];
+  private readonly config: SsoConfig;
   private readonly state: CredentialState;
   private readonly probe: SsoProbe;
   private readonly now: () => number;
@@ -109,33 +108,23 @@ export class SsoLifecycle implements SsoAuthorization {
   private readonly binding: IdentityBinding;
 
   constructor(
-    config: Config,
-    store: TokenStore,
+    config: SsoConfig,
+    store: SsoTokenStore,
     private readonly audit: (event: SsoAuditEvent, fields?: Record<string, unknown>) => void,
     overrides: SsoLifecycleOverrides = {}
   ) {
     this.config = config;
-    this.binding = bindingOf(config.apiBaseUrl, (config.auth as { expectedUser?: string }).expectedUser);
+    this.binding = bindingOf(config.apiBaseUrl, config.auth.expectedUser);
     this.overrides = overrides;
     this.now = overrides.now ?? Date.now;
     this.probe = overrides.probe ?? defaultProbe(config.apiBaseUrl);
-    const persistence =
-      overrides.persistence ??
-      (store instanceof SsoTokenStore
-        ? new FileStatePersistence(store.statePath, store.legacyMarkerPath)
-        : new MemoryStatePersistence());
-    const fileStore = store instanceof SsoTokenStore ? store : undefined;
-    this.renewalLock = fileStore ? new RealmLock(fileStore.renewLockPath) : undefined;
-    this.state = new CredentialState(
-      store,
-      persistence,
-      this.now,
-      fileStore ? new RealmLock(fileStore.lockPath) : undefined
-    );
-    this.auth = config.auth as Extract<Config["auth"], { method: "sso" }>;
+    const persistence = overrides.persistence ?? new FileStatePersistence(store.statePath, store.legacyMarkerPath);
+    this.renewalLock = new RealmLock(store.renewLockPath);
+    this.state = new CredentialState(store, persistence, this.now, new RealmLock(store.lockPath));
+    this.auth = config.auth;
     this.renewal = new SsoRenewalManager({
       state: this.state,
-      ...(this.renewalLock ? { renewalLock: this.renewalLock } : {}),
+      renewalLock: this.renewalLock,
       leadMs: this.auth.renewLeadMs,
       retries: this.auth.renewRetries,
       now: this.now,
@@ -204,8 +193,8 @@ export class SsoLifecycle implements SsoAuthorization {
    * lock, identity validation and the epoch check, so it can never do what a real renewal may not.
    */
   async forceRenewal(): Promise<{ uid?: string; expiresAtMs: number; fingerprint: string }> {
-    const handle = this.renewalLock?.tryAcquire();
-    if (this.renewalLock && !handle) throw new SsoUnavailableError("Another process is renewing the sign-in.");
+    const handle = this.renewalLock.tryAcquire();
+    if (!handle) throw new SsoUnavailableError("Another process is renewing the sign-in.");
     try {
       const epochAtStart = this.state.epoch();
       const previous = this.state.currentToken();
@@ -224,7 +213,7 @@ export class SsoLifecycle implements SsoAuthorization {
         fingerprint: createHash("sha256").update(stored.token).digest("hex").slice(0, 16),
       };
     } finally {
-      handle?.release();
+      handle.release();
     }
   }
 
@@ -370,14 +359,4 @@ export class SsoLifecycle implements SsoAuthorization {
       timeoutMs,
     });
   }
-}
-
-export function createSsoLifecycle(
-  config: Config,
-  store: TokenStore,
-  audit: (event: SsoAuditEvent, fields?: Record<string, unknown>) => void,
-  overrides: SsoLifecycleOverrides = {}
-): SsoLifecycle {
-  if (config.auth.method !== "sso") throw new SsoLoginError("SSO lifecycle requires SSO authentication.");
-  return new SsoLifecycle(config, store, audit, overrides);
 }

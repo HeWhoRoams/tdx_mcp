@@ -206,6 +206,13 @@ export function getTdxHome(): string {
   return resolveTdxHome(parseCliEnv(), process.platform, homedir());
 }
 
+/** A configuration known to use per-user SSO, so callers need no casts. */
+export type SsoConfig = Config & { auth: Extract<Config["auth"], { method: "sso" }> };
+
+export function isSsoConfig(config: Config): config is SsoConfig {
+  return config.auth.method === "sso";
+}
+
 /** Service-account credentials (admin key or user login) as opposed to per-user SSO. */
 export function isServiceAuth(auth: Config["auth"]): auth is Exclude<Config["auth"], { method: "sso" }> {
   return auth.method !== "sso";

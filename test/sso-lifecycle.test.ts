@@ -6,8 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bindingOf } from "../src/auth/identity-binding.js";
 import { ssoTokenPath } from "../src/auth/paths.js";
 import type { SsoBrowserSession } from "../src/auth/sso-browser.js";
-import { createSsoLifecycle, type SsoProbe } from "../src/auth/sso-lifecycle.js";
-import { getConfig, resetConfig } from "../src/config.js";
+import { SsoLifecycle, type SsoProbe } from "../src/auth/sso-lifecycle.js";
+import { getConfig, resetConfig, type SsoConfig } from "../src/config.js";
 import { resetCaches } from "../src/services/cache.js";
 import { SsoTokenStore, type StoredToken } from "../src/services/token-store.js";
 
@@ -34,7 +34,7 @@ function setup(overrides: { probe?: SsoProbe; openRenewalSession?: () => Promise
   const config = getConfig();
   const store = new SsoTokenStore(ssoTokenPath(bindingOf(config.apiBaseUrl)));
   const audit = vi.fn();
-  const lifecycle = createSsoLifecycle(config, store, audit, { sleep: async () => undefined, ...overrides });
+  const lifecycle = new SsoLifecycle(config as SsoConfig, store, audit, { sleep: async () => undefined, ...overrides });
   return { lifecycle, store, audit };
 }
 
@@ -169,7 +169,7 @@ describe("signOut", () => {
     process.env.MCP_AUTH_TOKEN = "t";
     try {
       resetConfig();
-      const external = createSsoLifecycle(getConfig(), new SsoTokenStore(ssoTokenPath(bindingOf(getConfig().apiBaseUrl, "me@x.edu"))), () => undefined);
+      const external = new SsoLifecycle(getConfig() as SsoConfig, new SsoTokenStore(ssoTokenPath(bindingOf(getConfig().apiBaseUrl, "me@x.edu"))), () => undefined);
       const result = external.signOut(true);
       expect(result.removedLocalProfile).toBe(false);
       expect(result.operatorAction).toMatch(/Hermes operator/);

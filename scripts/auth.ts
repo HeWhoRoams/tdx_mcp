@@ -26,12 +26,15 @@ function requireJwt(value: unknown): string {
 }
 
 export function getAuthMethod(): "admin" | "user" | "sso" {
-  if (cliEnv().TEAMDYNAMIX_AUTH_METHOD?.toLowerCase() === "sso") return "sso";
-  const explicit = cliEnv().TEAMDYNAMIX_AUTH_METHOD?.toLowerCase();
-  if (explicit === "admin" && cliEnv().TEAMDYNAMIX_BEID && cliEnv().TEAMDYNAMIX_WS_KEY) return "admin";
-  if (explicit === "user"  && cliEnv().TEAMDYNAMIX_USERNAME && cliEnv().TEAMDYNAMIX_PASSWORD) return "user";
-  if (cliEnv().TEAMDYNAMIX_BEID && cliEnv().TEAMDYNAMIX_WS_KEY) return "admin";
-  if (cliEnv().TEAMDYNAMIX_USERNAME && cliEnv().TEAMDYNAMIX_PASSWORD) return "user";
+  const env = cliEnv();
+  const explicit = env.TEAMDYNAMIX_AUTH_METHOD?.toLowerCase();
+  const hasAdmin = Boolean(env.TEAMDYNAMIX_BEID && env.TEAMDYNAMIX_WS_KEY);
+  const hasUser = Boolean(env.TEAMDYNAMIX_USERNAME && env.TEAMDYNAMIX_PASSWORD);
+  if (explicit === "sso") return "sso";
+  if (explicit === "admin" && hasAdmin) return "admin";
+  if (explicit === "user" && hasUser) return "user";
+  if (hasAdmin) return "admin";
+  if (hasUser) return "user";
   throw new Error(
     "No credentials found.\n" +
     "Set TEAMDYNAMIX_BEID + TEAMDYNAMIX_WS_KEY  (admin service account)\n" +
