@@ -49,7 +49,7 @@ A sandbox-only acceptance test that proves the MCP service can safely use its He
 _Avoid_: assumed browser compatibility, production-first test
 
 **SSO action required**:
-A stable authentication state indicating that silent renewal could not satisfy the institution's sign-in policy and that an approved external sign-in workflow is necessary before TeamDynamix calls can continue.
+A stable authentication state (`SSO_ACTION_REQUIRED`) meaning there is no usable token and automatic renewal is blocked, so a person must run `npm run login` before TeamDynamix calls can continue. A still-valid token never causes it; see Renewal blocked.
 _Avoid_: chat credential prompt, authentication fallback
 
 **Loopback deployment**:
@@ -81,8 +81,16 @@ The MCP server-owned timer that starts with the server and schedules silent rene
 _Avoid_: external credential cron job, client-managed renewal
 
 **Renewal policy failure**:
-A silent-renewal failure caused by sign-in, MFA, Conditional Access, or other identity policy requirements. It transitions directly to SSO action required rather than being retried automatically.
+A silent-renewal failure caused by sign-in, MFA, Conditional Access, or other identity policy requirements. It is not retried and puts renewal into Renewal blocked; it becomes SSO action required only once the current token has expired.
 _Avoid_: transient renewal failure, retryable browser error
+
+**Renewal blocked**:
+The state in which automatic renewal is stopped (policy failure, identity mismatch, rejected token, or sign-out) but a token that has not yet expired is still served until its expiry. Only an interactive login lifts it. A transient failure (browser busy, network, 5xx) never blocks; it retries with backoff.
+_Avoid_: locked out, signed out (a block is not a sign-out)
+
+**Epoch**:
+A counter in the sign-in state file, incremented by every login and sign-out. A renewal records the epoch when it starts and may commit its result only if it is unchanged, so a logout during a renewal always wins.
+_Avoid_: version, generation
 
 **Browser adapter**:
 The deployment-specific implementation that obtains an SSO token from a browser: a dedicated local browser profile for desktop use or the existing Hermes CDP browser for centrally managed use.

@@ -1,3 +1,5 @@
+> **Note (2026-10-23):** Wording on policy failures is superseded by decision D1 in `sso-review-remediation.md`: a policy failure blocks automatic renewal, but a still-valid token keeps being served until it expires; SSO action required applies only when no usable token remains.
+
 # Deepen the SSO Lifecycle Implementation Plan
 
 ## Goal

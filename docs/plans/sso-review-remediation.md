@@ -7,6 +7,8 @@ This plan **does not replace** deepen-sso-lifecycle. Many findings are that plan
 
 ---
 
+> **Status 2026-10-23:** R0–R5 implemented on `feat/sso-user-auth`. Open: the manual two-client Windows check (R2), live sandbox verification, and re-running `/code-review` against `main`.
+
 ## 0. Finding register
 
 | ID | Axis | Finding | Severity | Phase |
@@ -76,10 +78,10 @@ Compare-and-swap on `epoch` closes the P4 race. The fingerprint check closes P3b
 ## 3. Phases
 
 ### R0: Hygiene first, so the rest is reviewable (½ day)
-- [ ] Add `.gitattributes` with `* text=auto eol=lf` (plus `*.ps1 eol=crlf` if any exist). In a **standalone commit**, run `git add --renormalize .` against `main`'s files only, so the whitespace churn leaves the feature diff (X3). Ideally land this on `main` first.
-- [ ] Revert `vitest` to `^4.1.11` (D4) and restore the `package-lock.json` entry.
-- [ ] Move `scripts/find-my-latest-ticket.ts` into its own commit (D5).
-- [ ] Commit the current SSO work as a **baseline commit** on `feat/sso-user-auth`, staging only SSO files, so later reviews can use `main...HEAD`. Each phase below is one or more commits after it.
+- [x] Add `.gitattributes` with `* text=auto eol=lf` (plus `*.ps1 eol=crlf` if any exist). In a **standalone commit**, run `git add --renormalize .` against `main`'s files only, so the whitespace churn leaves the feature diff (X3). Ideally land this on `main` first.
+- [x] Revert `vitest` to `^4.1.11` (D4) and restore the `package-lock.json` entry.
+- [x] Move `scripts/find-my-latest-ticket.ts` into its own commit (D5).
+- [x] Commit the current SSO work as a **baseline commit** on `feat/sso-user-auth`, staging only SSO files, so later reviews can use `main...HEAD`. Each phase below is one or more commits after it.
 - **Exit:** `git diff main...HEAD --stat` shows only SSO-related files; `npm test` is green.
 
 ### R1: Correctness and safety fixes (2–2.5 days). *Completes deepen Task 2 (state) and Task 3 (classification and backoff).*
@@ -95,11 +97,11 @@ export type SsoFailureKind =
 export class SsoFailure extends Error { constructor(readonly kind: SsoFailureKind, message: string) { super(message); } }
 export const isRetryable = (k: SsoFailureKind) => k === "transient";
 ```
-- [ ] `buildStoredToken`: no response, timeout, 429 or 5xx → `transient`. 401 or 3xx → `invalid-token`. Bad JWT or expired → `invalid-token`. User or tenant mismatch → `identity-mismatch`.
-- [ ] `waitForJwt`: on timeout, check the page's last origin. Still on the TeamDynamix origin or `about:blank` (nothing loaded) → `transient`. On any other origin (the IdP) → `interaction-required`. **Report the origin's kind only, never the URL.**
-- [ ] `openLocalBrowserSession`: the `playwright-core` import fails → `configuration`. Launch fails with a profile-in-use or SingletonLock error → `transient`. Other launch failures → `configuration`.
-- [ ] `openHermesCdpBrowserSession`: connect or `newPage` fails → `transient`.
-- [ ] Keep `SsoLoginError` as a deprecated alias for one release, or delete it if nothing outside `src/auth` uses it.
+- [x] `buildStoredToken`: no response, timeout, 429 or 5xx → `transient`. 401 or 3xx → `invalid-token`. Bad JWT or expired → `invalid-token`. User or tenant mismatch → `identity-mismatch`.
+- [x] `waitForJwt`: on timeout, check the page's last origin. Still on the TeamDynamix origin or `about:blank` (nothing loaded) → `transient`. On any other origin (the IdP) → `interaction-required`. **Report the origin's kind only, never the URL.**
+- [x] `openLocalBrowserSession`: the `playwright-core` import fails → `configuration`. Launch fails with a profile-in-use or SingletonLock error → `transient`. Other launch failures → `configuration`.
+- [x] `openHermesCdpBrowserSession`: connect or `newPage` fails → `transient`.
+- [x] Keep `SsoLoginError` as a deprecated alias for one release, or delete it if nothing outside `src/auth` uses it.
 
 **R1.2 Renewal manager rewrite (P1, P2, D1).** In `SsoRenewalManager.getUsableToken()`:
 ```ts
@@ -111,27 +113,27 @@ if (status.kind === "renewal-blocked") return token.token;                      
 if (token.expiresAtMs > now + SAFETY_MS) { void renewInBackground(); return token.token; } // don't make a tool call wait on a browser
 return await renewNow();                                                               // expired or nearly: must wait
 ```
-- [ ] Add `runRenewal` backoff: `delay = min(cap, base·2^attempt) ± 20% jitter`, with `base=30s`, `cap=15min`. Never schedule past `expiresAtMs − SAFETY_MS` (2 min). Inject the clock and scheduler.
-- [ ] Temporary failure, token still valid → keep the token and reschedule. Token expired → throw `SsoUnavailableError` ("couldn't renew right now; retry shortly, or run `npm run login`"). This does **not** set action-required.
-- [ ] Non-retryable failure → `state.blockRenewal(kind, epochAtStart)` (a no-op if the epoch moved). Serve the token if still valid; otherwise action-required.
-- [ ] **Rewrite** the test `"records a policy interruption…"` in `test/sso-renewal.test.ts`. It currently asserts the wrong behaviour. New assertions: with the old token valid, the first call **resolves** with the old token; `openSession` is called once; the second call resolves with **no** new browser launch; after expiry, a call rejects with `/sign-in required/`.
+- [x] Add `runRenewal` backoff: `delay = min(cap, base·2^attempt) ± 20% jitter`, with `base=30s`, `cap=15min`. Never schedule past `expiresAtMs − SAFETY_MS` (2 min). Inject the clock and scheduler.
+- [x] Temporary failure, token still valid → keep the token and reschedule. Token expired → throw `SsoUnavailableError` ("couldn't renew right now; retry shortly, or run `npm run login`"). This does **not** set action-required.
+- [x] Non-retryable failure → `state.blockRenewal(kind, epochAtStart)` (a no-op if the epoch moved). Serve the token if still valid; otherwise action-required.
+- [x] **Rewrite** the test `"records a policy interruption…"` in `test/sso-renewal.test.ts`. It currently asserts the wrong behaviour. New assertions: with the old token valid, the first call **resolves** with the old token; `openSession` is called once; the second call resolves with **no** new browser launch; after expiry, a call rejects with `/sign-in required/`.
 
 **R1.3 Epoch CAS and pure persistence (P4).**
-- [ ] Remove `allowAutomaticRenewal()` from `SsoTokenStore.write()`, and remove `blockAutomaticRenewal()` from `clear()`.
-- [ ] Remove `isAutomaticRenewalAllowed`, `blockAutomaticRenewal` and the duplicated `AutomaticRenewalControl` interface from the store and the manager. `CredentialState` owns them (this also fixes the Refused Bequest and Middle Man smells).
-- [ ] `CredentialState.commitRenewal(token, epochAtStart)` and `.beginRenewal()` (returns `epoch`) apply the table in §2 under the realm lock (R2). Until R2 lands, use a process-local mutex.
-- [ ] Migrate the existing `.action-required` marker: if present, write a state file with `renewal:"blocked"`, `"signed-out"`, then delete the marker.
+- [x] Remove `allowAutomaticRenewal()` from `SsoTokenStore.write()`, and remove `blockAutomaticRenewal()` from `clear()`.
+- [x] Remove `isAutomaticRenewalAllowed`, `blockAutomaticRenewal` and the duplicated `AutomaticRenewalControl` interface from the store and the manager. `CredentialState` owns them (this also fixes the Refused Bequest and Middle Man smells).
+- [x] `CredentialState.commitRenewal(token, epochAtStart)` and `.beginRenewal()` (returns `epoch`) apply the table in §2 under the realm lock (R2). Until R2 lands, use a process-local mutex.
+- [x] Migrate the existing `.action-required` marker: if present, write a state file with `renewal:"blocked"`, `"signed-out"`, then delete the marker.
 
 **R1.4 Pin identity on renewal (P6, D2).**
-- [ ] `validate(token, previous, mode: "renewal" | "login")`. For `renewal`, require `stored.uid === previous.uid` when `previous.uid` is set; otherwise fail with `identity-mismatch`, which blocks renewal. For `login`, a UID change is allowed: audit `identity_changed { fromUid, toUid }`, purge caches, `epoch+1`.
+- [x] `validate(token, previous, mode: "renewal" | "login")`. For `renewal`, require `stored.uid === previous.uid` when `previous.uid` is set; otherwise fail with `identity-mismatch`, which blocks renewal. For `login`, a UID change is allowed: audit `identity_changed { fromUid, toUid }`, purge caches, `epoch+1`.
 
 **R1.5 401 probe: three outcomes and a CAS clear (P3, P3b).** Move the probe out of `client.ts` into the lifecycle (it reuses the identity validator's `getuser` call, which removes the duplicated-probe smell):
 ```ts
 type UnauthorizedVerdict = "permission-denied" | "revoked" | "unknown";
 // getuser 2xx → permission-denied; 401 or 3xx → revoked; timeout/429/5xx/network → unknown
 ```
-- [ ] `permission-denied` → `TeamDynamixPermissionError` (as today). `revoked` → `state.revoke(fingerprint)`, which deletes the token only if it matches, then action-required. `unknown` → a new `TeamDynamixTransientAuthError` ("TeamDynamix couldn't confirm your sign-in; retry shortly"). **The token is not touched.**
-- [ ] Remove `this.tokens.clear()` and `lastSsoProbeOk` from `client.ts` for SSO. The 60-second cache of a successful probe moves into the lifecycle, keyed by token fingerprint.
+- [x] `permission-denied` → `TeamDynamixPermissionError` (as today). `revoked` → `state.revoke(fingerprint)`, which deletes the token only if it matches, then action-required. `unknown` → a new `TeamDynamixTransientAuthError` ("TeamDynamix couldn't confirm your sign-in; retry shortly"). **The token is not touched.**
+- [x] Remove `this.tokens.clear()` and `lastSsoProbeOk` from `client.ts` for SSO. The 60-second cache of a successful probe moves into the lifecycle, keyed by token fingerprint.
 
 **R1 tests (red first):**
 
@@ -150,12 +152,12 @@ type UnauthorizedVerdict = "permission-denied" | "revoked" | "unknown";
 **Exit:** all five sso-user-auth Review Focus items are covered by a test that fails on the old code.
 
 ### R2: Single flight across processes (P5) (1 day)
-- [ ] New `src/auth/realm-lock.ts`: `withRealmLock(digest, fn, { waitMs, staleMs })`. It creates `tokens/sso-<digest>.lock` with `openSync(path, "wx")`, holding `{pid, hostname, acquiredAtMs}`. The lock counts as stale when older than `staleMs` (default 2 min) **or** when `process.kill(pid, 0)` throws ESRCH on the same host. Release it in `finally`.
-- [ ] Renewal uses `tryAcquire`. If the lock is busy, another process is renewing: wait up to 45 s for the token file's mtime to change, then re-read it. That counts as success if the token is fresh; it is **not** a failure, and nothing is blocked.
-- [ ] Short critical sections (commit, revoke, sign-out) use a blocking acquire: 50 ms polling, 5 s cap.
-- [ ] Classify a browser profile-in-use error (Chromium `SingletonLock`) as `transient` (R1.1), as a backstop.
-- [ ] Tests: two `SsoRenewalManager`s over one temp `TDX_HOME` → one `openSession` call, and both resolve to the same token. A stale lock (dead pid, old mtime) is taken over. The lock is released when `fn` throws.
-- [ ] Manual check: Claude Desktop and Claude Code both running the server against the same realm → exactly one Edge launch at renewal time.
+- [x] New `src/auth/realm-lock.ts`: `withRealmLock(digest, fn, { waitMs, staleMs })`. It creates `tokens/sso-<digest>.lock` with `openSync(path, "wx")`, holding `{pid, hostname, acquiredAtMs}`. The lock counts as stale when older than `staleMs` (default 2 min) **or** when `process.kill(pid, 0)` throws ESRCH on the same host. Release it in `finally`.
+- [x] Renewal uses `tryAcquire`. If the lock is busy, another process is renewing: wait up to 45 s for the token file's mtime to change, then re-read it. That counts as success if the token is fresh; it is **not** a failure, and nothing is blocked.
+- [x] Short critical sections (commit, revoke, sign-out) use a blocking acquire: 50 ms polling, 5 s cap.
+- [x] Classify a browser profile-in-use error (Chromium `SingletonLock`) as `transient` (R1.1), as a backstop.
+- [x] Tests: two `SsoRenewalManager`s over one temp `TDX_HOME` → one `openSession` call, and both resolve to the same token. A stale lock (dead pid, old mtime) is taken over. The lock is released when `fn` throws.
+- [ ] Manual check: Claude Desktop and Claude Code both running the server against the same realm → exactly one Edge launch at renewal time.  _(not done: manual Windows check)_
 
 ### R3: Structure (1.5–2 days). *Completes deepen Task 1 (resolved deployment) and Task 4 (opaque capability).*
 
@@ -166,61 +168,61 @@ export interface SsoAuthorization {
   reportUnauthorized(fingerprint: string): Promise<UnauthorizedVerdict>;   // R1.5
 }
 ```
-- [ ] `TeamDynamixClient` receives `SsoAuthorization` from the composition root (`src/auth/sso-composition.ts`). It stops creating `SsoLifecycle` itself and never reads `this.tokens` in SSO mode. `getToken()`'s SSO branch shrinks to `authorize()`.
-- [ ] Error mapping: `SsoActionRequiredError` → `TeamDynamixAuthError` carrying **one** canonical code, `SSO_ACTION_REQUIRED` (a constant in `sso-errors.ts`). That replaces the four spellings (Primitive Obsession smell).
+- [x] `TeamDynamixClient` receives `SsoAuthorization` from the composition root (`src/auth/sso-composition.ts`). It stops creating `SsoLifecycle` itself and never reads `this.tokens` in SSO mode. `getToken()`'s SSO branch shrinks to `authorize()`.
+- [x] Error mapping: `SsoActionRequiredError` → `TeamDynamixAuthError` carrying **one** canonical code, `SSO_ACTION_REQUIRED` (a constant in `sso-errors.ts`). That replaces the four spellings (Primitive Obsession smell).
 
 **R3.2 Identity binding type (Data Clumps smell, G2).**
 ```ts
 export interface IdentityBinding { realm: string /* normalized */; expectedUser?: string /* lower-cased */; }
 export function bindingDigest(b: IdentityBinding): string; // one implementation
 ```
-- [ ] `paths.ts`, `cache.ts`, `token-store.ts` and `scripts/auth.ts` take an `IdentityBinding` instead of `(apiBaseUrl, expectedUser)`. Delete the second hash implementation in `cache.ts`.
-- [ ] Cache namespace = `bindingDigest(binding) + ":" + effectiveUid`, supplied by the lifecycle through `setCacheNamespace(fn)`, registered by the composition root. `scopedCacheKey` stops calling `getConfig()` (this also removes a hidden config dependency). Before validation, the namespace is `unverified`, so nothing is cached.
-- [ ] Test: same realm and expected user but a different UID → cache miss; sandbox vs production → cache miss.
+- [x] `paths.ts`, `cache.ts`, `token-store.ts` and `scripts/auth.ts` take an `IdentityBinding` instead of `(apiBaseUrl, expectedUser)`. Delete the second hash implementation in `cache.ts`.
+- [x] Cache namespace = `bindingDigest(binding) + ":" + effectiveUid`, supplied by the lifecycle through `setCacheNamespace(fn)`, registered by the composition root. `scopedCacheKey` stops calling `getConfig()` (this also removes a hidden config dependency). Before validation, the namespace is `unverified`, so nothing is cached.
+- [x] Test: same realm and expected user but a different UID → cache miss; sandbox vs production → cache miss.
 
 **R3.3 Config consolidation (S1, S2, Speculative Generality).**
-- [ ] Add `LOCALAPPDATA` and `XDG_STATE_HOME` to `RawEnvSchema` as optional strings.
-- [ ] `getTdxHome()` becomes a pure function of parsed values, `resolveTdxHome(raw, platform, homedir)`, and `Config` gains `stateHome`. Paths read `config.stateHome`.
-- [ ] Add `parseCliEnv(env = process.env)`, which runs `RawEnvSchema.pick({...})` for the CLI and scripts that must start without full credentials. **This is the only other place allowed to see `process.env`, and it lives in `config.ts`.** `getApiBaseUrl()` uses it.
-- [ ] Delete `getSsoCliSettings()` (no callers; deepen Task 1 says to remove it).
-- [ ] Delete `TEAMDYNAMIX_SSO_BROWSER_ADAPTER` and `browserAdapter`. `TEAMDYNAMIX_MCP_DEPLOYMENT` is the sole selector (deepen "Decisions"). Reject the old variable with a `ConfigError` naming its replacement, the same pattern as `TEAMDYNAMIX_SSO_DEPLOYMENT`.
-- [ ] `scripts/auth.ts`: replace the new `process.env.TEAMDYNAMIX_SSO_EXPECTED_USER` read with `parseCliEnv()`. Leave the older admin/user reads as a follow-up note.
+- [x] Add `LOCALAPPDATA` and `XDG_STATE_HOME` to `RawEnvSchema` as optional strings.
+- [ ] `getTdxHome()` becomes a pure function of parsed values, `resolveTdxHome(raw, platform, homedir)`, and `Config` gains `stateHome`. Paths read `config.stateHome`.  _(dropped: `getTdxHome()` is already pure, so a separate `stateHome` field adds nothing)_
+- [x] Add `parseCliEnv(env = process.env)`, which runs `RawEnvSchema.pick({...})` for the CLI and scripts that must start without full credentials. **This is the only other place allowed to see `process.env`, and it lives in `config.ts`.** `getApiBaseUrl()` uses it.
+- [x] Delete `getSsoCliSettings()` (no callers; deepen Task 1 says to remove it).
+- [x] Delete `TEAMDYNAMIX_SSO_BROWSER_ADAPTER` and `browserAdapter`. `TEAMDYNAMIX_MCP_DEPLOYMENT` is the sole selector (deepen "Decisions"). Reject the old variable with a `ConfigError` naming its replacement, the same pattern as `TEAMDYNAMIX_SSO_DEPLOYMENT`.
+- [x] `scripts/auth.ts`: replace the new `process.env.TEAMDYNAMIX_SSO_EXPECTED_USER` read with `parseCliEnv()`. Leave the older admin/user reads as a follow-up note.
 
 **R3.4 Name the literal unions (Primitive Obsession).** Add `BrowserChannel = "msedge" | "chrome" | "chromium"`, `TokenSource = "sso" | "paste"` and `CredentialStatus` (from §2), each exported once and imported everywhere.
 
 **R3.5 One place for SSO branching (Repeated Switches).** After R3.1, `auth.method === "sso"` should appear only in `config.ts` (parsing) and the composition root. `client.ts`, `token-store.ts` and `cache.ts` should take injected collaborators instead. `deployment === "external"` collapses into the resolved deployment's `browserAdapter` factory and its `fullSignOutEffect`.
 
 **R3.6 Remaining smell cleanups**
-- [ ] `isLoopbackHost(host)`, used once in `config.ts` (replaces the two copies).
-- [ ] One `FALLBACK_TOKEN_LIFETIME_MS` constant (`sso-login.ts` and `client.ts`).
-- [ ] One "user changed → purge caches" helper inside `SsoTokenStore` (read and write).
-- [ ] One `loadPlaywright()` in `src/auth/playwright.ts`, used by both browser adapters, which classifies the missing-module error as `configuration`.
-- [ ] Merge `openInteractiveSession` and `openRenewalSession` into `openSession({ interactive })` on the resolved deployment.
+- [x] `isLoopbackHost(host)`, used once in `config.ts` (replaces the two copies).
+- [x] One `FALLBACK_TOKEN_LIFETIME_MS` constant (`sso-login.ts` and `client.ts`).
+- [x] One "user changed → purge caches" helper inside `SsoTokenStore` (read and write).
+- [x] One `loadPlaywright()` in `src/auth/playwright.ts`, used by both browser adapters, which classifies the missing-module error as `configuration`.
+- [x] Merge `openInteractiveSession` and `openRenewalSession` into `openSession({ interactive })` on the resolved deployment.
 
 **R3 exit:** `grep -rn "process.env" src | grep -v "src/config.ts"` returns nothing. `grep -rn 'method === "sso"' src` shows only config and composition.
 
 ### R4: Finish the missing spec items (1.5 days). *Completes deepen Tasks 2, 4 and 5 and multi-user-remote Task 5.*
 
 **R4.1 Legacy migration (G3).** The Phase 1 layout used `tokens/sso-<sha256(realm)[:16]>.json` (realm-only digest) and `browser-profile/` (singular).
-- [ ] On lifecycle `start()`: if the new token file is missing and the legacy file exists, validate it via `/auth/getuser`. **Migrate only if the expected user is set and matches.** Then write the new file, rename the legacy one to `*.migrated`, and audit `state_migrated`. Otherwise leave it untouched; status says "run `npm run login`".
-- [ ] Legacy `browser-profile/` → rename to `browser-profiles/sso-<digest>`, but only if no lock or SingletonLock is present. Otherwise skip and log.
-- [ ] Tests: matching legacy → migrated; mismatched or no expected user → untouched; a second start is idempotent.
+- [x] On lifecycle `start()`: if the new token file is missing and the legacy file exists, validate it via `/auth/getuser`. **Migrate only if the expected user is set and matches.** Then write the new file, rename the legacy one to `*.migrated`, and audit `state_migrated`. Otherwise leave it untouched; status says "run `npm run login`".
+- [x] Legacy `browser-profile/` → rename to `browser-profiles/sso-<digest>`, but only if no lock or SingletonLock is present. Otherwise skip and log.
+- [x] Tests: matching legacy → migrated; mismatched or no expected user → untouched; a second start is idempotent.
 
 **R4.2 Hermes compatibility gate (G4).**
-- [ ] Add `CompatibilityProbe` (exported for the script only, not the client): `forceRenewal(): Promise<{ uid, expiresAtMs }>`. It bypasses the freshness check but still goes through lock, validation and CAS.
-- [ ] Before and after each mint, capture the CDP target set (`Target.getTargets`, or `browser.contexts().flatMap(c => c.pages())`). Compare sets of target IDs, **excluding the owned renewal tab's ID**. Report `{ unrelatedTargetsBefore: n, unrelatedTargetsAfter: n, unchanged: true }`, as counts and IDs only, **never URLs or titles**.
-- [ ] The gate fails if the sets differ, the second mint returns the same JWT fingerprint, or the UID changes.
-- [ ] Add `test/hermes-sso-compat.test.ts` covering argument parsing, the production guard, the set comparison, and that output has no URL or JWT.
+- [x] Add `CompatibilityProbe` (exported for the script only, not the client): `forceRenewal(): Promise<{ uid, expiresAtMs }>`. It bypasses the freshness check but still goes through lock, validation and CAS.
+- [x] Before and after each mint, capture the CDP target set (`Target.getTargets`, or `browser.contexts().flatMap(c => c.pages())`). Compare sets of target IDs, **excluding the owned renewal tab's ID**. Report `{ unrelatedTargetsBefore: n, unrelatedTargetsAfter: n, unchanged: true }`, as counts and IDs only, **never URLs or titles**.
+- [x] The gate fails if the sets differ, the second mint returns the same JWT fingerprint, or the UID changes.
+- [x] Add `test/hermes-sso-compat.test.ts` covering argument parsing, the production guard, the set comparison, and that output has no URL or JWT.
 
 **R4.3 External `logout --all` (G5).** `signOut({ full })` returns `{ removedLocalProfile: boolean; operatorAction?: string }`. For an external deployment, the CLI prints the operator action ("Ask the Hermes operator to sign the workspace browser out of CMU SSO") and exits 0. Test it.
 
 **R4.4 Missing test files (G6).** `test/sso-lifecycle.test.ts` (start/stop, single flight, D1, P6), `test/http-auth.test.ts` (loopback-only SSO; MCP access secret rejected before dispatch; no TDX token forwarded), and `test/client.test.ts` additions (admin/user never construct the composition root; SSO client uses only `SsoAuthorization`).
 
 ### R5: Docs and standards (½ day)
-- [ ] AGENTS.md (D3): change the entry-point rule to "`src/index.ts` selects a transport, or delegates `login`/`logout`/`whoami` to `src/cli`". Add the four scripts to Build & Run. Add a Key Convention: "SSO state transitions go through `CredentialState`; never call `SsoTokenStore.write/clear` directly."
-- [ ] GLOSSARY: add **Renewal blocked** (D1) and **Epoch**. Align "SSO action required" with the single code.
-- [ ] Amend the deepen-sso-lifecycle wording for D1, then tick off the checkboxes these phases complete.
-- [ ] Update the README's SSO section for status states, multi-process behaviour and migration.
+- [x] AGENTS.md (D3): change the entry-point rule to "`src/index.ts` selects a transport, or delegates `login`/`logout`/`whoami` to `src/cli`". Add the four scripts to Build & Run. Add a Key Convention: "SSO state transitions go through `CredentialState`; never call `SsoTokenStore.write/clear` directly."
+- [x] GLOSSARY: add **Renewal blocked** (D1) and **Epoch**. Align "SSO action required" with the single code.
+- [x] Amend the deepen-sso-lifecycle wording for D1, then tick off the checkboxes these phases complete.
+- [x] Update the README's SSO section for status states, multi-process behaviour and migration.
 
 ## 4. Verification
 

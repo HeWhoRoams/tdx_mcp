@@ -15,6 +15,8 @@ npm run bench       # latency benchmark; accepts -- --app-id <ID>
 npm run policy:sync # rewrite config/tool-policy.json from the current tool catalog
 npm run dev         # tsx watch (no build needed)
 npm start            # stdio transport (default)
+npm run login        # sign in as yourself via SSO (also: whoami, logout [-- --all])
+npm run test:hermes-sso -- --realm sandbox  # Hermes browser compatibility gate
 npm run start:http   # Streamable HTTP on 127.0.0.1:3000
 npx @modelcontextprotocol/inspector node dist/index.js  # interactive testing
 ```
@@ -37,7 +39,7 @@ src/
 │   └── schema.ts     # Zod schema for config/tool-policy.json
 ├── schemas/
 │   └── common.ts     # AppIdSchema, PagingShape, AttributesSchema, ResponseFormatSchema
-├── auth/             # SSO token validation, browser adapter, and renewal lifecycle
+├── auth/             # SSO: credential state, renewal, locks, browser adapters, composition root
 ├── cli/              # Human-initiated login, identity, and sign-out commands
 ├── services/
 │   ├── client.ts     # Auth/refresh, keep-alive, rate limiting, single-flight, retry
@@ -100,8 +102,10 @@ archive/             # pre-2.0 implementation, kept for reference only (not comp
 - **Error hints**: write tools may define `errorHints` to append valid IDs to a 400. These read cache only — never add a network call to the failure path.
 - **Search window**: TeamDynamix search has no offset parameter, so paging is client-side and fetches are capped at `MAX_SEARCH_FETCH` (251). Past that, steer agents to saved searches or reports.
 - **Rate limits**: a sliding-window limiter (`TEAMDYNAMIX_RATE_LIMIT`/`TEAMDYNAMIX_RATE_WINDOW_MS`, default 30/60 s) queues outgoing calls to stay under TD's per-IP quota. That quota is shared across processes, so a 429 gets its own retry budget (`TEAMDYNAMIX_MAX_RATE_LIMIT_WAITS`) and honors `Retry-After` up to `TEAMDYNAMIX_MAX_RETRY_DELAY_MS`; 503s use `TEAMDYNAMIX_MAX_RETRIES`.
-- **Entry point**: `src/server.ts` builds the `McpServer`; `src/index.ts` only selects a transport and starts it. Import `createServer` from `server.js` (importing `index.js` starts the server). Tool arrays are aggregated and domain-tagged in `src/tools/index.ts`.
+- **Entry point**: `src/server.ts` builds the `McpServer`; `src/index.ts` selects a transport and starts it, or hands `login`/`logout`/`whoami` to `src/cli`. Import `createServer` from `server.js` (importing `index.js` starts the server). Tool arrays are aggregated and domain-tagged in `src/tools/index.ts`.
 - **Config**: every environment variable is parsed and validated once in `src/config.ts`. Do not read `process.env` anywhere else. `src/policy/index.ts` stays pure — it receives already-parsed values so it can be unit-tested without the environment.
+- **SSO state transitions go through `CredentialState`** (`src/auth/credential-state.ts`). Never call `SsoTokenStore.write/clear` directly: login, renewal commit, block, revoke and sign-out are epoch-checked and run under the realm lock. Only an interactive login lifts a renewal block; a blocked renewal still serves a valid token until it expires.
+- **SSO reaches the HTTP client only as `SsoAuthorization`** (a header plus fingerprint), built by `src/auth/sso-composition.ts`. The client never sees the token or the store. `method === "sso"` belongs in `config.ts` and the composition root only; use `isServiceAuth()` elsewhere.
 - **Logging**: use `logger` from `services/logger.ts`. stdout is reserved for the stdio transport, so never `console.log` in server code.
 - **Reports**: `teamdynamix_get_report` (with `with_data=true`) and `teamdynamix_run_saved_search` are the most powerful read operations for complex queries — prefer these over chaining many search calls.
 

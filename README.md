@@ -12,7 +12,7 @@ For local use, the server can act as **you** instead of a shared admin key. Team
 npm install
 npm run build
 npm run login      # opens Edge, you finish CMU SSO + MFA, the window closes
-npm run whoami     # shows who you are and when the token expires (~24h)
+npm run whoami     # who you are, when the token expires, and whether renewal is healthy (~24h)
 npm run logout     # forget the token (add -- --all to also remove the login browser profile)
 ```
 
@@ -35,6 +35,12 @@ MCP client config (set auth in the client's `env` block, not `.env`, because cli
 ```
 
 Notes: TeamDynamix tokens last 24 hours and have no refresh token. After the first login, the server silently mints and validates a replacement about one hour before expiry. If CMU SSO requires interaction or MFA, tools return `SSO_ACTION_REQUIRED`; run `npm run login` to recover. Sandbox and production keep separate state. See `docs/plans/sso-user-auth.md`.
+
+**States** (`npm run whoami`): *usable* (renews automatically); *renewal blocked* (renewal hit MFA or another policy, a different user, or a rejected token; the current token keeps working until it expires, then run `npm run login`); *needs renewal* (expired, renews on next use if it can); *sign-in required* (nothing usable, run `npm run login`). A timeout or 5xx from TeamDynamix never discards your token. `npm run logout` always wins over a renewal already in progress.
+
+**Several clients at once** (for example Claude Desktop and Claude Code on the same realm): they share one token file and take a lock around renewal, so only one browser window opens and the others pick up its result.
+
+**Upgrading from the first SSO release:** if `TEAMDYNAMIX_SSO_EXPECTED_USER` is set, an existing saved sign-in is carried over after TeamDynamix confirms it is yours. Otherwise it is left untouched and you simply run `npm run login`. With `TEAMDYNAMIX_MCP_DEPLOYMENT=external`, `logout --all` cannot end the Hermes browser's SSO session; ask the Hermes operator.
 
 ### External Hermes SSO
 
