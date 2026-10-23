@@ -1,3 +1,4 @@
+import type { RealmLock } from "./realm-lock.js";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { StoredToken, TokenStore } from "../services/token-store.js";
@@ -121,8 +122,14 @@ export class CredentialState {
   constructor(
     private readonly store: TokenStore,
     private readonly persistence: CredentialStatePersistence,
-    private readonly now: () => number = Date.now
+    private readonly now: () => number = Date.now,
+    /** Serialises state transitions across processes sharing one realm. */
+    private readonly lock?: RealmLock
   ) {}
+
+  private locked<T>(fn: () => T): T {
+    return this.lock ? this.lock.withSync(fn) : fn();
+  }
 
   currentToken(): StoredToken | undefined {
     return this.store.read();
@@ -145,9 +152,11 @@ export class CredentialState {
 
   /** The one way back from "blocked": an interactive login (browser or paste). */
   commitLogin(token: StoredToken): void {
-    const state = this.persistence.read();
-    this.store.write(token);
-    this.persistence.write({ version: 1, epoch: state.epoch + 1, renewal: "allowed" });
+    this.locked(() => {
+      const state = this.persistence.read();
+      this.store.write(token);
+      this.persistence.write({ version: 1, epoch: state.epoch + 1, renewal: "allowed" });
+    });
   }
 
   /**
@@ -155,19 +164,23 @@ export class CredentialState {
    * same epoch (no login or logout) and renewal still allowed.
    */
   commitRenewal(token: StoredToken, epochAtStart: number): boolean {
-    const state = this.persistence.read();
-    if (state.epoch !== epochAtStart || state.renewal !== "allowed") return false;
-    this.store.write(token);
-    return true;
+    return this.locked(() => {
+      const state = this.persistence.read();
+      if (state.epoch !== epochAtStart || state.renewal !== "allowed") return false;
+      this.store.write(token);
+      return true;
+    });
   }
 
   /** Blocks automatic renewal, unless a login or logout already moved the epoch. Never touches the token. */
   blockRenewal(reason: BlockReason, epochAtStart: number): boolean {
-    const state = this.persistence.read();
-    if (state.epoch !== epochAtStart) return false;
-    if (state.renewal === "blocked") return true;
-    this.persistence.write({ ...state, renewal: "blocked", blockedReason: reason, blockedAtMs: this.now() });
-    return true;
+    return this.locked(() => {
+      const state = this.persistence.read();
+      if (state.epoch !== epochAtStart) return false;
+      if (state.renewal === "blocked") return true;
+      this.persistence.write({ ...state, renewal: "blocked", blockedReason: reason, blockedAtMs: this.now() });
+      return true;
+    });
   }
 
   /**
@@ -175,28 +188,32 @@ export class CredentialState {
    * if it is still the stored token: a newer token written meanwhile is left alone.
    */
   revokeToken(token: string): boolean {
-    const current = this.store.read();
-    if (!current || current.token !== token) return false;
-    const state = this.persistence.read();
-    this.store.clear();
-    this.persistence.write({
-      ...state,
-      renewal: "blocked",
-      blockedReason: "invalid-token",
-      blockedAtMs: this.now(),
+    return this.locked(() => {
+      const current = this.store.read();
+      if (!current || current.token !== token) return false;
+      const state = this.persistence.read();
+      this.store.clear();
+      this.persistence.write({
+        ...state,
+        renewal: "blocked",
+        blockedReason: "invalid-token",
+        blockedAtMs: this.now(),
+      });
+      return true;
     });
-    return true;
   }
 
   signOut(): void {
-    const state = this.persistence.read();
-    this.store.clear();
-    this.persistence.write({
-      version: 1,
-      epoch: state.epoch + 1,
-      renewal: "blocked",
-      blockedReason: "signed-out",
-      blockedAtMs: this.now(),
+    this.locked(() => {
+      const state = this.persistence.read();
+      this.store.clear();
+      this.persistence.write({
+        version: 1,
+        epoch: state.epoch + 1,
+        renewal: "blocked",
+        blockedReason: "signed-out",
+        blockedAtMs: this.now(),
+      });
     });
   }
 }

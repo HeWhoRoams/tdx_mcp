@@ -111,6 +111,16 @@ export class SsoTokenStore implements TokenStore {
     return `${this.path}.state.json`;
   }
 
+  /** Short critical sections (commit, revoke, sign-out) take this lock. */
+  get lockPath(): string {
+    return `${this.path}.lock`;
+  }
+
+  /** Held for the whole of a renewal so only one process opens the shared browser profile. */
+  get renewLockPath(): string {
+    return `${this.path}.renew.lock`;
+  }
+
   /** Marker written by the first SSO release; migrated into the state file on first read. */
   get legacyMarkerPath(): string {
     return `${this.path}.action-required`;

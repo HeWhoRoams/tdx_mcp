@@ -1,3 +1,4 @@
+import { RealmLock } from "./realm-lock.js";
 import axios from "axios";
 import { existsSync, rmSync } from "node:fs";
 import { browserProfileDir } from "./paths.js";
@@ -102,10 +103,17 @@ export class SsoLifecycle implements SsoAuthorization {
       (store instanceof SsoTokenStore
         ? new FileStatePersistence(store.statePath, store.legacyMarkerPath)
         : new MemoryStatePersistence());
-    this.state = new CredentialState(store, persistence, this.now);
+    const fileStore = store instanceof SsoTokenStore ? store : undefined;
+    this.state = new CredentialState(
+      store,
+      persistence,
+      this.now,
+      fileStore ? new RealmLock(fileStore.lockPath) : undefined
+    );
     this.auth = config.auth as Extract<Config["auth"], { method: "sso" }>;
     this.renewal = new SsoRenewalManager({
       state: this.state,
+      ...(fileStore ? { renewalLock: new RealmLock(fileStore.renewLockPath) } : {}),
       leadMs: this.auth.renewLeadMs,
       retries: this.auth.renewRetries,
       now: this.now,
