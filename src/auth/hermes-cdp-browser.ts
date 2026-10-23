@@ -1,3 +1,4 @@
+import { loadPlaywright } from "./playwright.js";
 import { SsoLoginError } from "./sso-login.js";
 import { type BrowserPage, type SsoBrowserSession, waitForJwt } from "./sso-browser.js";
 
@@ -12,13 +13,7 @@ type ConnectedBrowser = { newPage(): Promise<RenewalPage> };
 export type ConnectOverCdp = (endpoint: string) => Promise<ConnectedBrowser>;
 
 async function defaultConnectOverCdp(endpoint: string): Promise<ConnectedBrowser> {
-  const moduleName = "playwright-core";
-  let playwright: any;
-  try {
-    playwright = await import(moduleName);
-  } catch {
-    throw new SsoLoginError("Attaching to the Hermes browser needs the optional playwright-core package.", "configuration");
-  }
+  const playwright = await loadPlaywright("Attaching to the Hermes browser needs the optional playwright-core package.");
   return playwright.chromium.connectOverCDP(endpoint) as Promise<ConnectedBrowser>;
 }
 

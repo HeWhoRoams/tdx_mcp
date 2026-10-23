@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import type { BrowserChannel } from "./auth/sso-types.js";
 import { resolveToolPolicy, ToolPolicyError, type ToolPolicy } from "./policy/index.js";
 import { ToolPolicyFileSchema, type ToolPolicyFile } from "./policy/schema.js";
 
@@ -92,7 +93,7 @@ export interface Config {
         method: "sso";
         expectedUser?: string;
         deployment: "local" | "external";
-        browser: "msedge" | "chrome" | "chromium";
+        browser: BrowserChannel;
         cdpEndpoint?: string;
         renewLeadMs: number;
         renewRetries: number;

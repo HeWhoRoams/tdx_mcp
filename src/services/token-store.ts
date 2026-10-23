@@ -1,3 +1,4 @@
+import type { TokenSource } from "../auth/sso-types.js";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, unlinkSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,7 +21,7 @@ export interface StoredToken {
   partition?: string;
   apiBaseUrl?: string;
   obtainedAtMs?: number;
-  method?: "sso" | "paste";
+  method?: TokenSource;
 }
 
 export interface TokenStore {

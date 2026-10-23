@@ -1,3 +1,5 @@
+import { loadPlaywright } from "./playwright.js";
+import type { BrowserChannel } from "./sso-types.js";
 import { extractJwt, loginSsoUrl, SsoLoginError, SsoPolicyError } from "./sso-login.js";
 import type { SsoFailureKind } from "./sso-errors.js";
 
@@ -8,7 +10,7 @@ export interface SsoBrowserSession {
 
 export interface LocalBrowserOptions {
   apiBaseUrl: string;
-  browser: "msedge" | "chrome" | "chromium";
+  browser: BrowserChannel;
   profileDir: string;
   headless: boolean;
   timeoutMs: number;
@@ -29,23 +31,16 @@ type BrowserContext = {
 
 export type LaunchLocalBrowser = (
   profileDir: string,
-  options: { channel?: "msedge" | "chrome"; headless: boolean; viewport: { width: number; height: number } }
+  options: { channel?: Exclude<BrowserChannel, "chromium">; headless: boolean; viewport: { width: number; height: number } }
 ) => Promise<BrowserContext>;
 
 async function defaultLaunchLocalBrowser(
   profileDir: string,
-  options: { channel?: "msedge" | "chrome"; headless: boolean; viewport: { width: number; height: number } }
+  options: { channel?: Exclude<BrowserChannel, "chromium">; headless: boolean; viewport: { width: number; height: number } }
 ): Promise<BrowserContext> {
-  const moduleName = "playwright-core";
-  let playwright: any;
-  try {
-    playwright = await import(moduleName);
-  } catch {
-    throw new SsoLoginError(
-      "Interactive sign-in needs the optional playwright-core package (run `npm install`), or use `npm run login -- --paste`.",
-      "configuration"
-    );
-  }
+  const playwright = await loadPlaywright(
+    "Interactive sign-in needs the optional playwright-core package (run `npm install`), or use `npm run login -- --paste`."
+  );
   return playwright.chromium.launchPersistentContext(profileDir, options) as Promise<BrowserContext>;
 }
 

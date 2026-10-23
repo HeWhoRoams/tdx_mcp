@@ -1,3 +1,4 @@
+import type { TokenSource } from "./sso-types.js";
 import { createHash } from "node:crypto";
 import { RealmLock } from "./realm-lock.js";
 import axios from "axios";
@@ -238,7 +239,7 @@ export class SsoLifecycle implements SsoAuthorization {
     }
   }
 
-  async accept(token: string, method: "sso" | "paste"): Promise<StoredToken> {
+  async accept(token: string, method: TokenSource): Promise<StoredToken> {
     const previous = this.state.currentToken();
     const stored = await this.validate(token, previous, false);
     if (previous?.uid !== undefined && stored.uid !== undefined && previous.uid !== stored.uid) {

@@ -1,3 +1,4 @@
+import { FALLBACK_TOKEN_LIFETIME_MS } from "../auth/sso-types.js";
 import axios, { AxiosError, AxiosInstance } from "axios";
 import { Agent as HttpAgent } from "node:http";
 import { Agent as HttpsAgent } from "node:https";
@@ -136,7 +137,7 @@ export class TeamDynamixClient {
               { maxRedirects: 0 }
             );
       const token = requireJwt(response.data);
-      const expiresAtMs = decodeJwtExpiryMs(token) ?? Date.now() + 23 * 60 * 60 * 1000;
+      const expiresAtMs = decodeJwtExpiryMs(token) ?? Date.now() + FALLBACK_TOKEN_LIFETIME_MS;
       this.tokens.write({ token, expiresAtMs });
       logger.info("authenticated with TeamDynamix", { method: config.auth.method, durationMs: Date.now() - started });
       return token;

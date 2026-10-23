@@ -1,3 +1,4 @@
+import { FALLBACK_TOKEN_LIFETIME_MS, type TokenSource } from "./sso-types.js";
 import axios from "axios";
 import type { StoredToken } from "../services/token-store.js";
 import type { SsoFailureKind } from "./sso-errors.js";
@@ -87,7 +88,7 @@ export async function buildStoredToken(
   apiBaseUrl: string,
   options: {
     expectedUser?: string;
-    method: "sso" | "paste";
+    method: TokenSource;
     previous?: StoredToken;
     /** Renewal must not change who is signed in; only an interactive login may. */
     requireSameUser?: boolean;
@@ -103,7 +104,7 @@ export async function buildStoredToken(
     );
   }
 
-  const expiresAtMs = typeof claims.exp === "number" ? claims.exp * 1000 : Date.now() + 23 * 60 * 60 * 1000;
+  const expiresAtMs = typeof claims.exp === "number" ? claims.exp * 1000 : Date.now() + FALLBACK_TOKEN_LIFETIME_MS;
   if (expiresAtMs <= Date.now()) throw new SsoLoginError("That token has already expired.");
 
   let user: GetUserResponse;
