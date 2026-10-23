@@ -231,3 +231,25 @@ describe("client with an injected SsoAuthorization", () => {
     await expect(make(new SsoUnavailableError("later")).request("/x")).rejects.toThrow(/^SSO_RENEWAL_UNAVAILABLE: later/);
   });
 });
+
+describe("composition root", () => {
+  it("builds nothing for service-account methods and registers no cache namespace", async () => {
+    const { createSsoAuthorization } = await import("../src/auth/sso-composition.js");
+    const { scopedCacheKey } = await import("../src/services/cache.js");
+    env({ TEAMDYNAMIX_AUTH_METHOD: "admin", TEAMDYNAMIX_BEID: "b", TEAMDYNAMIX_WS_KEY: "k" });
+    resetConfig();
+    expect(createSsoAuthorization(getConfig())).toBeUndefined();
+    expect(scopedCacheKey("k")).toBe("k");
+  });
+
+  it("builds a handle for SSO that registers the namespace and removes it on stop", async () => {
+    const { createSsoAuthorization } = await import("../src/auth/sso-composition.js");
+    const { scopedCacheKey } = await import("../src/services/cache.js");
+    env();
+    const handle = createSsoAuthorization(getConfig());
+    expect(handle).toBeDefined();
+    expect(scopedCacheKey("k")).toBe("sso:unverified:k"); // no verified sign-in yet
+    handle!.stop();
+    expect(scopedCacheKey("k")).toBe("k");
+  });
+});
