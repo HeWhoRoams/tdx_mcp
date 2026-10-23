@@ -4,7 +4,8 @@ import { RealmLock } from "./realm-lock.js";
 import axios from "axios";
 import { existsSync, rmSync } from "node:fs";
 import { bindingDigest, bindingOf, type IdentityBinding } from "./identity-binding.js";
-import { browserProfileDir } from "./paths.js";
+import { migrateLegacyState, type MigrationOutcome } from "./legacy-migration.js";
+import { browserProfileDir, ssoTokenPath } from "./paths.js";
 import { openHermesCdpBrowserSession } from "./hermes-cdp-browser.js";
 import { openLocalBrowserSession, type SsoBrowserSession } from "./sso-browser.js";
 import { buildStoredToken, decodeJwtClaims, ssoLoginRequiredMessage, SsoLoginError, SsoPolicyError } from "./sso-login.js";
@@ -18,7 +19,7 @@ import {
   type CredentialStatePersistence,
   type CredentialStatus,
 } from "./credential-state.js";
-import type { Config } from "../config.js";
+import { getTdxHome, type Config } from "../config.js";
 import { SsoTokenStore, type StoredToken, type TokenStore } from "../services/token-store.js";
 
 export interface SsoStatus {
@@ -40,6 +41,8 @@ export type SsoAuditEvent =
   | "action_required"
   | "identity_changed"
   | "token_revoked"
+  | "state_migrated"
+  | "state_migration_skipped"
   | "logout";
 
 /** What TeamDynamix said about a token it just answered 401 for. */
@@ -143,7 +146,23 @@ export class SsoLifecycle implements SsoAuthorization {
   }
 
   start(): void {
-    this.renewal.start();
+    // Migration may need one network round trip, so renewal scheduling waits for it (never fails start).
+    void this.migrateLegacyState()
+      .catch(() => undefined)
+      .then(() => this.renewal.start());
+  }
+
+  /** Carries a first-release sign-in forward only if it is verified as the Expected user. */
+  migrateLegacyState(): Promise<MigrationOutcome> {
+    return migrateLegacyState({
+      binding: this.binding,
+      stateHome: getTdxHome(),
+      tokenPath: ssoTokenPath(this.binding),
+      currentProfileDir: browserProfileDir(this.binding),
+      validate: (token) => this.validate(token, undefined, false),
+      commit: (token) => this.state.commitLogin({ ...token, method: token.method ?? "sso" }),
+      audit: (event, fields) => this.audit(event, fields),
+    });
   }
   stop(): void {
     this.renewal.stop();
