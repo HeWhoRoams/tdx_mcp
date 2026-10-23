@@ -87,7 +87,7 @@ async function run(): Promise<void> {
     process.exit(1);
   }
 
-  let authMethod: "admin" | "user";
+  let authMethod: "admin" | "user" | "sso";
   try {
     authMethod = getAuthMethod();
   } catch (err) {

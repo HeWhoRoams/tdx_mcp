@@ -65,6 +65,31 @@ describe("getConfig", () => {
     expect(() => getConfig()).toThrow(/MCP_AUTH_TOKEN is required/);
   });
 
+  it("accepts an external Hermes SSO deployment only on an authenticated loopback HTTP endpoint", () => {
+    withEnv({
+      TEAMDYNAMIX_BASE_URL: REQUIRED.TEAMDYNAMIX_BASE_URL,
+      TEAMDYNAMIX_AUTH_METHOD: "sso",
+      TEAMDYNAMIX_MCP_DEPLOYMENT: "external",
+      TEAMDYNAMIX_SSO_EXPECTED_USER: "person@example.edu",
+      TEAMDYNAMIX_SSO_CDP_ENDPOINT: "http://127.0.0.1:9222",
+      TRANSPORT: "http",
+      HOST: "127.0.0.1",
+      MCP_AUTH_TOKEN: "separate-mcp-secret",
+    });
+    expect(getConfig().auth).toMatchObject({ method: "sso", deployment: "external", browserAdapter: "hermes-cdp" });
+  });
+
+  it.each([
+    [{ TEAMDYNAMIX_AUTH_METHOD: "sso", TEAMDYNAMIX_MCP_DEPLOYMENT: "external" }, /EXPECTED_USER/i],
+    [{ TEAMDYNAMIX_AUTH_METHOD: "sso", TEAMDYNAMIX_MCP_DEPLOYMENT: "external", TEAMDYNAMIX_SSO_EXPECTED_USER: "p", TRANSPORT: "http" }, /MCP_AUTH_TOKEN/i],
+    [{ TEAMDYNAMIX_AUTH_METHOD: "sso", TEAMDYNAMIX_MCP_DEPLOYMENT: "external", TEAMDYNAMIX_SSO_EXPECTED_USER: "p", MCP_AUTH_TOKEN: "x" }, /HTTP/i],
+    [{ TEAMDYNAMIX_AUTH_METHOD: "sso", TEAMDYNAMIX_MCP_DEPLOYMENT: "external", TEAMDYNAMIX_SSO_EXPECTED_USER: "p", MCP_AUTH_TOKEN: "x", TRANSPORT: "http", TEAMDYNAMIX_SSO_CDP_ENDPOINT: "https://remote.example" }, /loopback CDP/i],
+    [{ TEAMDYNAMIX_MCP_DEPLOYMENT: "external", TEAMDYNAMIX_SSO_EXPECTED_USER: "p", MCP_AUTH_TOKEN: "x", TRANSPORT: "http", TEAMDYNAMIX_SSO_CDP_ENDPOINT: "http://127.0.0.1:9222", TEAMDYNAMIX_AUTH_METHOD: "admin" }, /requires TEAMDYNAMIX_AUTH_METHOD=sso/i],
+  ])("rejects an invalid external Hermes configuration", (overrides, expected) => {
+    withEnv({ ...REQUIRED, ...overrides });
+    expect(() => getConfig()).toThrow(expected);
+  });
+
   it("applies documented defaults", () => {
     const config = getConfig();
     expect(config.http.timeoutMs).toBe(15_000);

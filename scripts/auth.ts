@@ -8,6 +8,9 @@
 
 import "dotenv/config";
 import { type AxiosInstance } from "axios";
+import { ssoTokenPath } from "../src/auth/paths.js";
+import { SsoTokenStore } from "../src/services/token-store.js";
+import { getApiBaseUrl } from "../src/config.js";
 
 function requireJwt(value: unknown): string {
   const token = typeof value === "string" ? value.trim() : String(value);
@@ -19,7 +22,8 @@ function requireJwt(value: unknown): string {
   return token;
 }
 
-export function getAuthMethod(): "admin" | "user" {
+export function getAuthMethod(): "admin" | "user" | "sso" {
+  if (process.env.TEAMDYNAMIX_AUTH_METHOD?.toLowerCase() === "sso") return "sso";
   const explicit = process.env.TEAMDYNAMIX_AUTH_METHOD?.toLowerCase();
   if (explicit === "admin" && process.env.TEAMDYNAMIX_BEID && process.env.TEAMDYNAMIX_WS_KEY) return "admin";
   if (explicit === "user"  && process.env.TEAMDYNAMIX_USERNAME && process.env.TEAMDYNAMIX_PASSWORD) return "user";
@@ -33,7 +37,14 @@ export function getAuthMethod(): "admin" | "user" {
   );
 }
 
-export async function authenticate(http: AxiosInstance, method: "admin" | "user"): Promise<string> {
+export async function authenticate(http: AxiosInstance, method: "admin" | "user" | "sso"): Promise<string> {
+  if (method === "sso") {
+    const stored = new SsoTokenStore(ssoTokenPath(getApiBaseUrl(), process.env.TEAMDYNAMIX_SSO_EXPECTED_USER)).read();
+    if (!stored || stored.expiresAtMs <= Date.now()) {
+      throw new Error("No valid SSO sign-in saved for this environment. Run: npm run login");
+    }
+    return stored.token;
+  }
   if (method === "admin") {
     const res = await http.post<string>(
       "/auth/loginadmin",

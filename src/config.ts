@@ -1,4 +1,6 @@
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { resolveToolPolicy, ToolPolicyError, type ToolPolicy } from "./policy/index.js";
@@ -30,7 +32,16 @@ const RawEnvSchema = z.object({
   TEAMDYNAMIX_WS_KEY: z.string().optional(),
   TEAMDYNAMIX_USERNAME: z.string().optional(),
   TEAMDYNAMIX_PASSWORD: z.string().optional(),
-  TEAMDYNAMIX_AUTH_METHOD: z.enum(["user", "admin"]).optional(),
+  TEAMDYNAMIX_AUTH_METHOD: z.enum(["user", "admin", "sso"]).optional(),
+  TEAMDYNAMIX_SSO_EXPECTED_USER: z.string().optional(),
+  TEAMDYNAMIX_SSO_BROWSER: z.enum(["msedge", "chrome", "chromium"]).default("msedge"),
+  /** local opens an owner-controlled profile; external attaches only to the configured Hermes CDP endpoint. */
+  TEAMDYNAMIX_MCP_DEPLOYMENT: z.enum(["local", "external"]).default("local"),
+  TEAMDYNAMIX_SSO_BROWSER_ADAPTER: z.enum(["local", "hermes-cdp"]).default("local"),
+  TEAMDYNAMIX_SSO_CDP_ENDPOINT: z.string().url().optional(),
+  TEAMDYNAMIX_SSO_RENEW_LEAD_MS: IntFromEnv(60 * 60 * 1000, 60_000, 23 * 60 * 60 * 1000),
+  TEAMDYNAMIX_SSO_RENEW_RETRIES: IntFromEnv(3, 0, 5),
+  TDX_HOME: z.string().optional(),
   TEAMDYNAMIX_READ_ONLY: BooleanFromEnv,
   TEAMDYNAMIX_TOKEN_CACHE: z.enum(["memory", "file"]).default("memory"),
 
@@ -75,7 +86,17 @@ export interface Config {
   webBaseUrl: string;
   auth:
     | { method: "admin"; beid: string; wsKey: string }
-    | { method: "user"; username: string; password: string };
+    | { method: "user"; username: string; password: string }
+    | {
+        method: "sso";
+        expectedUser?: string;
+        deployment: "local" | "external";
+        browser: "msedge" | "chrome" | "chromium";
+        browserAdapter: "local" | "hermes-cdp";
+        cdpEndpoint?: string;
+        renewLeadMs: number;
+        renewRetries: number;
+      };
   authCacheKey: string;
   readOnly: boolean;
   /** Which tools may be registered and invoked; see src/policy. */
@@ -140,6 +161,33 @@ export function resolveWebBaseUrl(apiBaseUrl: string): string {
   return apiBaseUrl.replace(/\/api$/, "").replace(/([A-Za-z]*)WebApi$/, "$1Next");
 }
 
+/** Where per-user state (SSO token files, the dedicated login browser profile) lives. */
+export function getTdxHome(): string {
+  const explicit = process.env.TDX_HOME?.trim();
+  if (explicit) return explicit;
+  if (process.platform === "win32") {
+    return join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "tdx-mcp");
+  }
+  return join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "tdx-mcp");
+}
+
+/** SSO settings for the login CLI, which runs without the full credential validation. */
+export function getSsoCliSettings(): {
+  expectedUser?: string;
+  browser: "msedge" | "chrome" | "chromium";
+  deployment: "local" | "external";
+  cdpEndpoint?: string;
+} {
+  const browser = process.env.TEAMDYNAMIX_SSO_BROWSER;
+  const expectedUser = process.env.TEAMDYNAMIX_SSO_EXPECTED_USER?.trim();
+  return {
+    browser: browser === "chrome" || browser === "chromium" ? browser : "msedge",
+    deployment: process.env.TEAMDYNAMIX_MCP_DEPLOYMENT === "external" ? "external" : "local",
+    ...(process.env.TEAMDYNAMIX_SSO_CDP_ENDPOINT ? { cdpEndpoint: process.env.TEAMDYNAMIX_SSO_CDP_ENDPOINT } : {}),
+    ...(expectedUser ? { expectedUser } : {}),
+  };
+}
+
 function splitList(value: string | undefined): string[] {
   return value?.split(",").map((entry) => entry.trim()).filter(Boolean) ?? [];
 }
@@ -172,6 +220,9 @@ function loadPolicyFile(path: string, required: boolean): { data: unknown; sourc
 }
 
 function buildConfig(env: NodeJS.ProcessEnv): Config {
+  if (env.TEAMDYNAMIX_SSO_DEPLOYMENT !== undefined) {
+    throw new ConfigError("TEAMDYNAMIX_SSO_DEPLOYMENT is obsolete. Use TEAMDYNAMIX_MCP_DEPLOYMENT.");
+  }
   const parsed = RawEnvSchema.safeParse(env);
   if (!parsed.success) {
     const details = parsed.error.issues.map((issue) => `  - ${issue.path.join(".")}: ${issue.message}`);
@@ -181,12 +232,19 @@ function buildConfig(env: NodeJS.ProcessEnv): Config {
 
   const hasAdmin = Boolean(raw.TEAMDYNAMIX_BEID && raw.TEAMDYNAMIX_WS_KEY);
   const hasUser = Boolean(raw.TEAMDYNAMIX_USERNAME && raw.TEAMDYNAMIX_PASSWORD);
-  const requested = raw.TEAMDYNAMIX_AUTH_METHOD ?? (hasAdmin ? "admin" : hasUser ? "user" : undefined);
+  const isSso = raw.TEAMDYNAMIX_AUTH_METHOD === "sso";
+  const requested = isSso ? undefined : raw.TEAMDYNAMIX_AUTH_METHOD ?? (hasAdmin ? "admin" : hasUser ? "user" : undefined);
 
-  if (requested === undefined) {
+  if (isSso && (hasAdmin || hasUser)) {
+    process.stderr.write(
+      "TEAMDYNAMIX_AUTH_METHOD=sso: ignoring TEAMDYNAMIX_BEID/WS_KEY/USERNAME/PASSWORD. Requests run as the signed-in user.\n"
+    );
+  }
+
+  if (!isSso && requested === undefined) {
     throw new ConfigError(
-      "No TeamDynamix credentials configured. Set TEAMDYNAMIX_BEID + TEAMDYNAMIX_WS_KEY (admin service account, preferred) " +
-        "or TEAMDYNAMIX_USERNAME + TEAMDYNAMIX_PASSWORD (user login)."
+      "No TeamDynamix credentials configured. Set TEAMDYNAMIX_BEID + TEAMDYNAMIX_WS_KEY (admin service account, preferred), " +
+        "TEAMDYNAMIX_USERNAME + TEAMDYNAMIX_PASSWORD (user login), or TEAMDYNAMIX_AUTH_METHOD=sso (sign in as yourself via `npm run login`)."
     );
   }
   if (requested === "admin" && !hasAdmin) {
@@ -196,8 +254,53 @@ function buildConfig(env: NodeJS.ProcessEnv): Config {
     throw new ConfigError("TEAMDYNAMIX_AUTH_METHOD=user requires both TEAMDYNAMIX_USERNAME and TEAMDYNAMIX_PASSWORD.");
   }
 
-  const auth: Config["auth"] =
-    requested === "admin"
+  const expectedUser = raw.TEAMDYNAMIX_SSO_EXPECTED_USER?.trim();
+  const externalSso = raw.TEAMDYNAMIX_MCP_DEPLOYMENT === "external";
+  if (externalSso && !isSso) {
+    throw new ConfigError("TEAMDYNAMIX_MCP_DEPLOYMENT=external requires TEAMDYNAMIX_AUTH_METHOD=sso.");
+  }
+  if (externalSso && !expectedUser) {
+    throw new ConfigError("External Hermes SSO requires TEAMDYNAMIX_SSO_EXPECTED_USER.");
+  }
+  if (externalSso && raw.TRANSPORT !== "http") {
+    throw new ConfigError("External Hermes SSO requires TRANSPORT=http on its loopback MCP endpoint.");
+  }
+  if (externalSso && !raw.MCP_AUTH_TOKEN) {
+    throw new ConfigError("External Hermes SSO requires a separate MCP_AUTH_TOKEN.");
+  }
+  let cdpEndpoint: string | undefined;
+  if (externalSso) {
+    if (!raw.TEAMDYNAMIX_SSO_CDP_ENDPOINT) {
+      throw new ConfigError("External Hermes SSO requires TEAMDYNAMIX_SSO_CDP_ENDPOINT.");
+    }
+    try {
+      const parsedEndpoint = new URL(raw.TEAMDYNAMIX_SSO_CDP_ENDPOINT);
+      const endpointLoopback = parsedEndpoint.hostname === "127.0.0.1" || parsedEndpoint.hostname === "localhost" || parsedEndpoint.hostname === "::1";
+      if (!endpointLoopback || !["http:", "https:", "ws:", "wss:"].includes(parsedEndpoint.protocol)) {
+        throw new Error("not loopback");
+      }
+      cdpEndpoint = parsedEndpoint.toString().replace(/\/$/, "");
+    } catch {
+      throw new ConfigError("External Hermes SSO requires a valid loopback CDP endpoint.");
+    }
+  }
+  if (isSso && !expectedUser) {
+    process.stderr.write(
+      "TEAMDYNAMIX_SSO_EXPECTED_USER is not set: a different account in the dedicated SSO browser profile will be accepted. Set it to the expected email or username to bind local SSO to one person.\n"
+    );
+  }
+  const auth: Config["auth"] = isSso
+    ? {
+        method: "sso",
+        deployment: raw.TEAMDYNAMIX_MCP_DEPLOYMENT,
+        browser: raw.TEAMDYNAMIX_SSO_BROWSER,
+        browserAdapter: externalSso ? "hermes-cdp" : raw.TEAMDYNAMIX_SSO_BROWSER_ADAPTER,
+        ...(cdpEndpoint ? { cdpEndpoint } : {}),
+        renewLeadMs: raw.TEAMDYNAMIX_SSO_RENEW_LEAD_MS,
+        renewRetries: raw.TEAMDYNAMIX_SSO_RENEW_RETRIES,
+        ...(expectedUser ? { expectedUser } : {}),
+      }
+    : requested === "admin"
       ? { method: "admin", beid: raw.TEAMDYNAMIX_BEID!, wsKey: raw.TEAMDYNAMIX_WS_KEY! }
       : { method: "user", username: raw.TEAMDYNAMIX_USERNAME!, password: raw.TEAMDYNAMIX_PASSWORD! };
 
@@ -207,6 +310,18 @@ function buildConfig(env: NodeJS.ProcessEnv): Config {
   if (raw.TRANSPORT === "http" && !isLoopback && !raw.MCP_AUTH_TOKEN) {
     throw new ConfigError(
       "MCP_AUTH_TOKEN is required when HOST is not a loopback address. Set a strong bearer token before exposing write-capable tools remotely."
+    );
+  }
+
+  if (isSso && raw.TRANSPORT === "http" && !isLoopback) {
+    throw new ConfigError(
+      "TEAMDYNAMIX_AUTH_METHOD=sso is single-user and local-only. Use stdio, or bind HTTP to a loopback HOST."
+    );
+  }
+
+  if (isSso && !externalSso && raw.TEAMDYNAMIX_SSO_BROWSER_ADAPTER !== "local") {
+    throw new ConfigError(
+      "TEAMDYNAMIX_SSO_BROWSER_ADAPTER=hermes-cdp is not implemented yet. Use local for this deployment."
     );
   }
 
@@ -232,7 +347,8 @@ function buildConfig(env: NodeJS.ProcessEnv): Config {
     apiBaseUrl: resolveApiBaseUrl(raw.TEAMDYNAMIX_BASE_URL),
     webBaseUrl: resolveWebBaseUrl(resolveApiBaseUrl(raw.TEAMDYNAMIX_BASE_URL)),
     auth,
-    authCacheKey: auth.method === "admin" ? `admin:${auth.beid}` : `user:${auth.username}`,
+    authCacheKey:
+      auth.method === "admin" ? `admin:${auth.beid}` : auth.method === "user" ? `user:${auth.username}` : "sso",
     readOnly: raw.TEAMDYNAMIX_READ_ONLY,
     toolPolicy,
     tokenCache: raw.TEAMDYNAMIX_TOKEN_CACHE,

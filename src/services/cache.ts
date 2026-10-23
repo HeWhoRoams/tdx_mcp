@@ -1,4 +1,5 @@
 import { getConfig } from "../config.js";
+import { createHash } from "node:crypto";
 import { logger } from "./logger.js";
 
 interface Entry<T> {
@@ -110,6 +111,17 @@ export function resetCaches(): void {
   recordCache = undefined;
 }
 
+/** Cache keys are isolated per verified deployment identity before data enters a cache. */
+export function scopedCacheKey(key: string): string {
+  // Pure cache-key utilities are also used before runtime configuration exists.
+  let config;
+  try { config = getConfig(); } catch { return key; }
+  if (config.auth.method !== "sso") return key;
+  const identity = `${config.apiBaseUrl.toLowerCase()}|${config.auth.expectedUser?.toLowerCase() ?? "unbound"}`;
+  const namespace = createHash("sha256").update(identity).digest("hex").slice(0, 12);
+  return `sso:${namespace}:${key}`;
+}
+
 /**
  * Search results are cached per (endpoint + request body) so that paging through
  * an already-executed search does not re-run it upstream.
@@ -120,7 +132,7 @@ export function searchCacheKey(endpoint: string, body: Record<string, unknown>):
     .sort()
     .map((key) => `${key}=${JSON.stringify(rest[key])}`)
     .join("&");
-  return `${endpoint}?${normalized}`;
+  return scopedCacheKey(`${endpoint}?${normalized}`);
 }
 
 /**
@@ -129,7 +141,7 @@ export function searchCacheKey(endpoint: string, body: Record<string, unknown>):
  * record writes and is the data agents re-read most.
  */
 export function invalidateDomain(appId: number | undefined, domain: string): void {
-  const prefix = appId === undefined ? `/${domain}` : `/${appId}/${domain}`;
+  const prefix = scopedCacheKey(appId === undefined ? `/${domain}` : `/${appId}/${domain}`);
   const removed = getSearchCache().deleteByPrefix(prefix) + getRecordCache().deleteByPrefix(prefix);
   if (removed > 0) logger.debug("cache invalidated", { prefix, removed });
 }

@@ -1,13 +1,19 @@
 import axios, { AxiosError, AxiosInstance } from "axios";
+import { createHash } from "node:crypto";
 import { Agent as HttpAgent } from "node:http";
 import { Agent as HttpsAgent } from "node:https";
 import { getConfig } from "../config.js";
 import { increment, logger } from "./logger.js";
 import { RateLimiter } from "./rate-limiter.js";
 import { createTokenStore, type TokenStore } from "./token-store.js";
-import { getReferenceCache, getRecordCache } from "./cache.js";
+import { getReferenceCache, getRecordCache, scopedCacheKey } from "./cache.js";
+import { ssoLoginRequiredMessage } from "../auth/sso-login.js";
+import { createSsoLifecycle, type SsoLifecycle } from "../auth/sso-lifecycle.js";
 
 export class TeamDynamixAuthError extends Error {}
+
+/** Signed in as the user, but TeamDynamix says this user may not do that. */
+export class TeamDynamixPermissionError extends Error {}
 
 /** A request that the tool policy forbids reached the transport anyway. */
 export class TeamDynamixPolicyError extends Error {}
@@ -86,7 +92,9 @@ export class TeamDynamixClient {
   private readonly httpsAgent: HttpsAgent;
   private readonly limiter: RateLimiter;
   private readonly tokens: TokenStore;
+  private readonly ssoLifecycle: SsoLifecycle | undefined;
   private loginInFlight: Promise<string> | undefined;
+  private lastSsoProbeOk: { tokenFingerprint: string; atMs: number } | undefined;
   private readonly inFlight = new Map<string, Promise<unknown>>();
 
   constructor() {
@@ -102,10 +110,20 @@ export class TeamDynamixClient {
       httpsAgent: this.httpsAgent,
       headers: { "Content-Type": "application/json", Accept: "application/json" },
     });
+    if (config.auth.method === "sso") {
+      this.ssoLifecycle = createSsoLifecycle(config, this.tokens, (event, fields) =>
+        logger.info("sso lifecycle", { event, realm: config.apiBaseUrl, expectedUser: config.auth.method === "sso" ? config.auth.expectedUser : undefined, ...fields })
+      );
+      this.ssoLifecycle.start();
+    }
   }
 
   private async login(): Promise<string> {
     const config = getConfig();
+    if (config.auth.method === "sso") {
+      // SSO needs a human at a browser. The server never starts one on its own.
+      throw new TeamDynamixAuthError(ssoLoginRequiredMessage(config.apiBaseUrl, this.tokens.read()));
+    }
     const started = Date.now();
     try {
       // The login endpoints return the raw JWT as text/plain; axios hands it back as response.data.
@@ -135,7 +153,43 @@ export class TeamDynamixClient {
     }
   }
 
+  /**
+   * TeamDynamix answers 401 both for an expired token and for "this user may not
+   * do that". With SSO the token is precious (it needs a human to renew), so a
+   * 401 on a token that has not expired is checked against /auth/getuser before
+   * it is thrown away.
+   */
+  private async ssoTokenStillValid(token: string): Promise<boolean> {
+    const expiresAtMs = decodeJwtExpiryMs(token);
+    if (expiresAtMs !== undefined && expiresAtMs <= Date.now()) return false;
+    const tokenFingerprint = createHash("sha256").update(token).digest("hex");
+    if (
+      this.lastSsoProbeOk?.tokenFingerprint === tokenFingerprint &&
+      Date.now() - this.lastSsoProbeOk.atMs < 60_000
+    ) {
+      return true;
+    }
+    try {
+      await this.http.get("/auth/getuser", { headers: { Authorization: `Bearer ${token}` }, maxRedirects: 0 });
+      this.lastSsoProbeOk = { tokenFingerprint, atMs: Date.now() };
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private async getToken(): Promise<string> {
+    if (this.ssoLifecycle) {
+      try {
+        return await this.ssoLifecycle.authorization();
+      } catch (error) {
+        throw new TeamDynamixAuthError(
+          `SSO_ACTION_REQUIRED: ${ssoLoginRequiredMessage(getConfig().apiBaseUrl, this.tokens.read())} ${
+            error instanceof Error ? error.message : ""
+          }`.trim()
+        );
+      }
+    }
     const bufferMs = 60_000; // refresh a minute before expiry
     const cached = this.tokens.read();
     if (cached && cached.expiresAtMs - bufferMs > Date.now()) return cached.token;
@@ -181,7 +235,8 @@ export class TeamDynamixClient {
   async request<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
     const { method = "GET", data, params, cacheKey, cacheTtlMs = 0, cacheTier = "reference", dedupe } = options;
     const path = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
-    const caching = Boolean(cacheKey) && cacheTtlMs > 0;
+    const scopedKey = cacheKey ? scopedCacheKey(cacheKey) : undefined;
+    const caching = Boolean(scopedKey) && cacheTtlMs > 0;
     const cache = cacheTier === "record" ? getRecordCache() : getReferenceCache();
 
     // Backstop for a mis-annotated tool. POST is ambiguous (TD searches are POSTs)
@@ -193,7 +248,7 @@ export class TeamDynamixClient {
     }
 
     if (caching) {
-      const entry = cache.getAllowStale(cacheKey!);
+      const entry = cache.getAllowStale(scopedKey!);
       if (entry && !entry.stale) {
         increment("cacheHits");
         logger.debug("cache hit", { endpoint: path, tier: cacheTier });
@@ -207,7 +262,7 @@ export class TeamDynamixClient {
         const generation = cache.generation;
         void this.execute<T>(path, method, data, params)
           .then((fresh) => {
-            if (cache.generation === generation) cache.set(cacheKey!, fresh, cacheTtlMs);
+            if (cache.generation === generation) cache.set(scopedKey!, fresh, cacheTtlMs);
           })
           .catch((error) => logger.debug("background refresh failed", { endpoint: path, error: String(error) }));
         return entry.value as T;
@@ -234,7 +289,7 @@ export class TeamDynamixClient {
     // result afterwards would resurrect pre-write data for a full TTL.
     const generation = cache.generation;
     const promise = this.execute<T>(path, method, data, params).then((result) => {
-      if (caching && cache.generation === generation) cache.set(cacheKey!, result, cacheTtlMs);
+      if (caching && cache.generation === generation) cache.set(scopedKey!, result, cacheTtlMs);
       return result;
     });
 
@@ -284,6 +339,18 @@ export class TeamDynamixClient {
         attempt += 1;
         const retryAfterMs = parseRetryAfterMs(error.response?.headers?.["retry-after"]);
 
+        if (status === 401 && getConfig().auth.method === "sso") {
+          if (await this.ssoTokenStillValid(token)) {
+            throw new TeamDynamixPermissionError(
+              `TeamDynamix denied ${method} ${path}. You are signed in as yourself, so your own TeamDynamix role or application access does not allow this.`
+            );
+          }
+          this.tokens.clear();
+          this.lastSsoProbeOk = undefined;
+          increment("retries");
+          continue; // getToken() now reports that a new sign-in is required
+        }
+
         if (status === 401 && !refreshedToken) {
           // Token invalidated server-side: force a refresh and retry once.
           refreshedToken = true;
@@ -332,6 +399,7 @@ export class TeamDynamixClient {
 
   /** Releases sockets so short-lived processes exit promptly. */
   destroy(): void {
+    this.ssoLifecycle?.stop();
     this.httpAgent.destroy();
     this.httpsAgent.destroy();
   }
@@ -360,7 +428,7 @@ export function handleApiError(error: unknown): string {
   if (error instanceof TeamDynamixAuthError) {
     return `Error: ${error.message}`;
   }
-  if (error instanceof TeamDynamixPolicyError) {
+  if (error instanceof TeamDynamixPolicyError || error instanceof TeamDynamixPermissionError) {
     return `Error: ${error.message}`;
   }
   if (error instanceof AxiosError) {
@@ -373,7 +441,7 @@ export function handleApiError(error: unknown): string {
           bodyText ? ` Details: ${bodyText}` : ""
         } Check that all IDs and required fields are correct.`;
       case 401:
-        return "Error: Not authenticated. Check TEAMDYNAMIX_USERNAME/PASSWORD or TEAMDYNAMIX_BEID/WS_KEY, and confirm the account has API access.";
+        return "Error: Not authenticated. Check TEAMDYNAMIX_USERNAME/PASSWORD or TEAMDYNAMIX_BEID/WS_KEY (or run `npm run login` for SSO), and confirm the account has API access.";
       case 403:
         return "Error: Permission denied. The authenticated account lacks the TeamDynamix application/permission needed for this action.";
       case 404:

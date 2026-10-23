@@ -1,13 +1,25 @@
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { getConfig } from "../config.js";
 import { logger } from "./logger.js";
+import { resetCaches } from "./cache.js";
+import { ssoTokenPath } from "../auth/paths.js";
 
 export interface StoredToken {
   token: string;
   expiresAtMs: number;
+  /** Set for SSO tokens: who the token belongs to, as confirmed by /auth/getuser. */
+  uid?: string;
+  username?: string;
+  fullName?: string;
+  email?: string;
+  entity?: string;
+  partition?: string;
+  apiBaseUrl?: string;
+  obtainedAtMs?: number;
+  method?: "sso" | "paste";
 }
 
 export interface TokenStore {
@@ -81,8 +93,96 @@ class FileTokenStore implements TokenStore {
   }
 }
 
+/**
+ * Per-user SSO token on disk. The login CLI writes it while the server may be
+ * running, so read() reloads whenever the file's mtime changes (a fresh
+ * `npm run login` takes effect with no restart). If the owner of the token
+ * changes, every cache is purged so one identity's results never reach another.
+ */
+export class SsoTokenStore implements TokenStore {
+  private current: StoredToken | undefined;
+  private seenMtimeMs = -1;
+  private lastUid: string | undefined;
+
+  constructor(private readonly path: string) {}
+
+  /** A logout or an interactive-policy failure must require an explicit CLI login. */
+  isAutomaticRenewalAllowed(): boolean {
+    return !existsSync(`${this.path}.action-required`);
+  }
+
+  blockAutomaticRenewal(): void {
+    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
+    writeFileSync(`${this.path}.action-required`, "interactive login required\n", { mode: 0o600 });
+  }
+
+  private allowAutomaticRenewal(): void {
+    try {
+      unlinkSync(`${this.path}.action-required`);
+    } catch {
+      // The marker is absent, which is already the desired state.
+    }
+  }
+
+  read(): StoredToken | undefined {
+    let mtimeMs: number;
+    try {
+      mtimeMs = statSync(this.path).mtimeMs;
+    } catch {
+      this.current = undefined;
+      this.seenMtimeMs = -1;
+      return undefined;
+    }
+    if (mtimeMs !== this.seenMtimeMs) {
+      try {
+        const parsed = JSON.parse(readFileSync(this.path, "utf8")) as StoredToken;
+        if (typeof parsed.token !== "string" || typeof parsed.expiresAtMs !== "number") return undefined;
+        if (this.lastUid !== undefined && parsed.uid !== undefined && parsed.uid !== this.lastUid) {
+          logger.info("signed-in TeamDynamix user changed; purging caches");
+          resetCaches();
+        }
+        this.current = parsed;
+        this.seenMtimeMs = mtimeMs;
+        if (parsed.uid !== undefined) this.lastUid = parsed.uid;
+      } catch {
+        this.current = undefined;
+        return undefined;
+      }
+    }
+    return this.current;
+  }
+
+  write(token: StoredToken): void {
+    const previousUid = this.lastUid;
+    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
+    const tmp = `${this.path}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(token), { mode: 0o600 });
+    renameSync(tmp, this.path);
+    this.current = token;
+    this.seenMtimeMs = statSync(this.path).mtimeMs;
+    if (previousUid !== undefined && token.uid !== undefined && token.uid !== previousUid) {
+      logger.info("signed-in TeamDynamix user changed; purging caches");
+      resetCaches();
+    }
+    if (token.uid !== undefined) this.lastUid = token.uid;
+    this.allowAutomaticRenewal();
+  }
+
+  clear(): void {
+    this.current = undefined;
+    this.seenMtimeMs = -1;
+    try {
+      unlinkSync(this.path);
+    } catch {
+      // Nothing stored.
+    }
+    this.blockAutomaticRenewal();
+  }
+}
+
 export function createTokenStore(): TokenStore {
   const config = getConfig();
+  if (config.auth.method === "sso") return new SsoTokenStore(ssoTokenPath(config.apiBaseUrl, config.auth.expectedUser));
   return config.tokenCache === "file"
     ? new FileTokenStore(`${config.apiBaseUrl}|${config.authCacheKey}`)
     : new MemoryTokenStore();

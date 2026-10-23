@@ -1,4 +1,4 @@
-import { getReferenceCache } from "./cache.js";
+import { getReferenceCache, scopedCacheKey } from "./cache.js";
 
 interface NamedRef {
   ID: number;
@@ -13,7 +13,7 @@ const MAX_LISTED = 10;
  * was never fetched, the caller simply gets the plain API error.
  */
 export function referenceHint(appId: number, endpoint: string, label: string): string | undefined {
-  const cached = getReferenceCache().getAllowStale(`/${appId}/${endpoint}`);
+  const cached = getReferenceCache().getAllowStale(scopedCacheKey(`/${appId}/${endpoint}`));
   if (!cached) return undefined;
   const values = cached.value as NamedRef[] | undefined;
   if (!Array.isArray(values) || values.length === 0) return undefined;

@@ -37,6 +37,8 @@ src/
 │   └── schema.ts     # Zod schema for config/tool-policy.json
 ├── schemas/
 │   └── common.ts     # AppIdSchema, PagingShape, AttributesSchema, ResponseFormatSchema
+├── auth/             # SSO token validation, browser adapter, and renewal lifecycle
+├── cli/              # Human-initiated login, identity, and sign-out commands
 ├── services/
 │   ├── client.ts     # Auth/refresh, keep-alive, rate limiting, single-flight, retry
 │   ├── rate-limiter.ts
@@ -108,8 +110,11 @@ archive/             # pre-2.0 implementation, kept for reference only (not comp
 Set `TEAMDYNAMIX_BASE_URL` plus one of:
 - `TEAMDYNAMIX_USERNAME` + `TEAMDYNAMIX_PASSWORD` (user login)
 - `TEAMDYNAMIX_BEID` + `TEAMDYNAMIX_WS_KEY` (admin service account — preferred for automation)
+- `TEAMDYNAMIX_AUTH_METHOD=sso` (local or external SSO; run `npm run login` to establish the realm-specific browser session)
 
-Override selection with `TEAMDYNAMIX_AUTH_METHOD=user|admin`. The server caches the JWT and auto-refreshes ~1 min before expiry (TD tokens last 24 h).
+Override selection with `TEAMDYNAMIX_AUTH_METHOD=user|admin|sso`. SSO uses a validated, expected-user-bound token store and silently renews about one hour before expiry while its dedicated browser session remains valid; an MFA or policy challenge surfaces as `SSO_ACTION_REQUIRED`.
+
+For Hermes, set `TEAMDYNAMIX_MCP_DEPLOYMENT=external`. It is SSO-only, requires loopback HTTP, `MCP_AUTH_TOKEN`, `TEAMDYNAMIX_SSO_EXPECTED_USER`, and a loopback `TEAMDYNAMIX_SSO_CDP_ENDPOINT`. The CDP adapter owns only its renewal tab; retain the separate MCP secret and never forward/log the TeamDynamix JWT.
 
 ## Out of Scope
 
