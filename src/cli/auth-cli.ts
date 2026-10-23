@@ -77,8 +77,15 @@ export async function runAuthCli(command: string, args: string[]): Promise<numbe
         process.stdout.write(`Not signed in to ${environmentLabel(apiBaseUrl)}. Run: npm run login\n`);
         return 1;
       }
-      process.stdout.write(`Signed in as ${status.effectiveUid} on ${environmentLabel(apiBaseUrl)}; token expires ${new Date(status.expiresAtMs!).toLocaleString()} (${status.state}).\n`);
-      return status.state === "usable" ? 0 : 1;
+      const expires = new Date(status.expiresAtMs!).toLocaleString();
+      const notes: Record<string, string> = {
+        usable: "usable; renews automatically",
+        "renewal-blocked": `usable until it expires; automatic renewal is blocked (${status.blockedReason}), run: npm run login`,
+        "needs-renewal": "expired; will renew on next use if possible, otherwise run: npm run login",
+        "action-required": `sign-in required (${status.blockedReason}); run: npm run login`,
+      };
+      process.stdout.write(`Signed in as ${status.effectiveUid} on ${environmentLabel(apiBaseUrl)}; token expires ${expires} (${notes[status.state]}).\n`);
+      return status.state === "usable" || status.state === "renewal-blocked" ? 0 : 1;
     }
 
     if (command === "logout") {

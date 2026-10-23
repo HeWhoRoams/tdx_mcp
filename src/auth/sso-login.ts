@@ -1,9 +1,22 @@
 import axios from "axios";
 import type { StoredToken } from "../services/token-store.js";
+import type { SsoFailureKind } from "./sso-errors.js";
 
-export class SsoLoginError extends Error {}
+/** An SSO step failed. `kind` says whether to retry (transient) or to stop and involve a person. */
+export class SsoLoginError extends Error {
+  constructor(
+    message: string,
+    readonly kind: SsoFailureKind = "invalid-token"
+  ) {
+    super(message);
+  }
+}
 /** The IdP requires a person to complete an interactive sign-in or MFA step. */
-export class SsoPolicyError extends SsoLoginError {}
+export class SsoPolicyError extends SsoLoginError {
+  constructor(message: string) {
+    super(message, "interaction-required");
+  }
+}
 
 const JWT_PATTERN = /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/;
 
@@ -72,14 +85,21 @@ interface GetUserResponse {
 export async function buildStoredToken(
   token: string,
   apiBaseUrl: string,
-  options: { expectedUser?: string; method: "sso" | "paste"; previous?: StoredToken }
+  options: {
+    expectedUser?: string;
+    method: "sso" | "paste";
+    previous?: StoredToken;
+    /** Renewal must not change who is signed in; only an interactive login may. */
+    requireSameUser?: boolean;
+  }
 ): Promise<StoredToken> {
   const claims = decodeJwtClaims(token);
   if (!claims) throw new SsoLoginError("That value is not a decodable JWT.");
 
   if (options.expectedUser && claims.unique_name && !matchesExpectedUser(options.expectedUser, [claims.unique_name])) {
     throw new SsoLoginError(
-      `Signed in as ${claims.unique_name}, but TEAMDYNAMIX_SSO_EXPECTED_USER is ${options.expectedUser}. Nothing was saved.`
+      `Signed in as ${claims.unique_name}, but TEAMDYNAMIX_SSO_EXPECTED_USER is ${options.expectedUser}. Nothing was saved.`,
+      "identity-mismatch"
     );
   }
 
@@ -96,9 +116,16 @@ export async function buildStoredToken(
     user = response.data;
   } catch (error) {
     const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+    if (status === undefined || status === 429 || status >= 500) {
+      throw new SsoLoginError(
+        `TeamDynamix could not confirm the token at /auth/getuser (${status ?? "no response"}); try again shortly.`,
+        "transient"
+      );
+    }
     throw new SsoLoginError(
-      `TeamDynamix rejected the token at /auth/getuser (${status ?? "no response"}). ` +
-        "Check that it came from the same environment (TDWebApi vs SBTDWebApi) as TEAMDYNAMIX_BASE_URL."
+      `TeamDynamix rejected the token at /auth/getuser (${status}). ` +
+        "Check that it came from the same environment (TDWebApi vs SBTDWebApi) as TEAMDYNAMIX_BASE_URL.",
+      "invalid-token"
     );
   }
 
@@ -109,7 +136,16 @@ export async function buildStoredToken(
     !matchesExpectedUser(options.expectedUser, [user.PrimaryEmail, user.AlertEmail, user.UserName, claims.unique_name])
   ) {
     throw new SsoLoginError(
-      `Signed in as ${user.FullName ?? user.UID}, but TEAMDYNAMIX_SSO_EXPECTED_USER is ${options.expectedUser}. Nothing was saved.`
+      `Signed in as ${user.FullName ?? user.UID}, but TEAMDYNAMIX_SSO_EXPECTED_USER is ${options.expectedUser}. Nothing was saved.`,
+      "identity-mismatch"
+    );
+  }
+
+  if (options.requireSameUser && options.previous?.uid !== undefined && user.UID !== options.previous.uid) {
+    throw new SsoLoginError(
+      "The renewed sign-in belongs to a different TeamDynamix user than the current one. " +
+        "Run `npm run login` to switch users deliberately.",
+      "identity-mismatch"
     );
   }
 
@@ -119,7 +155,10 @@ export async function buildStoredToken(
     claims.tdx_entity !== undefined &&
     (previous.entity !== String(claims.tdx_entity) || previous.partition !== String(claims.tdx_partition))
   ) {
-    throw new SsoLoginError("This token is for a different TeamDynamix tenant than the saved one. Run `npm run logout` first.");
+    throw new SsoLoginError(
+      "This token is for a different TeamDynamix tenant than the saved one. Run `npm run logout` first.",
+      "identity-mismatch"
+    );
   }
 
   return {

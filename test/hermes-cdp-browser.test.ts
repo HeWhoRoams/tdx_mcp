@@ -22,4 +22,14 @@ describe("Hermes CDP SSO browser", () => {
     expect(browser.newPage).toHaveBeenCalledOnce();
     expect(page.close).toHaveBeenCalledOnce();
   });
+
+  it("classifies a failed connect and a failed newPage as transient", async () => {
+    const opts = { apiBaseUrl: "https://td.example/SBTDWebApi/api", cdpEndpoint: "http://127.0.0.1:9222", timeoutMs: 1_000 };
+    await expect(
+      openHermesCdpBrowserSession(opts, vi.fn(async () => { throw new Error("ECONNREFUSED"); }))
+    ).rejects.toMatchObject({ kind: "transient" });
+    await expect(
+      openHermesCdpBrowserSession(opts, vi.fn(async () => ({ newPage: async () => { throw new Error("target closed"); } })))
+    ).rejects.toMatchObject({ kind: "transient" });
+  });
 });

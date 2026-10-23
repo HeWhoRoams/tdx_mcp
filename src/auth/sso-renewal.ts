@@ -1,36 +1,86 @@
 import type { SsoBrowserSession } from "./sso-browser.js";
+import { describeBlockReason, type BlockReason, type CredentialState } from "./credential-state.js";
+import {
+  isRetryable,
+  SsoActionRequiredError,
+  SsoRenewalDiscardedError,
+  SsoUnavailableError,
+  type SsoFailureKind,
+} from "./sso-errors.js";
 import { SsoLoginError } from "./sso-login.js";
-import type { StoredToken, TokenStore } from "../services/token-store.js";
+import type { StoredToken } from "../services/token-store.js";
 
-export class SsoActionRequiredError extends Error {}
+export { SsoActionRequiredError } from "./sso-errors.js";
+
+/** Never make a tool call wait on a browser while the token still has at least this long to live. */
+export const RENEWAL_SAFETY_MS = 2 * 60_000;
+const IN_CALL_BASE_MS = 2_000;
+const IN_CALL_CAP_MS = 15_000;
+const RETRY_BASE_MS = 30_000;
+const RETRY_CAP_MS = 15 * 60_000;
+const MIN_RETRY_MS = 5_000;
+
+/** Exponential backoff with +/-20% jitter, capped. */
+export function backoffDelayMs(
+  attempt: number,
+  baseMs: number,
+  capMs: number,
+  random: () => number = Math.random
+): number {
+  const exponential = Math.min(capMs, baseMs * 2 ** attempt);
+  return Math.min(capMs, Math.round(exponential * (0.8 + 0.4 * random())));
+}
+
+export type SsoRenewalAuditEvent =
+  | "renewal_started"
+  | "renewal_succeeded"
+  | "renewal_failed"
+  | "renewal_discarded"
+  | "renewal_blocked";
 
 export interface SsoRenewalDependencies {
-  store: TokenStore;
+  state: CredentialState;
   leadMs: number;
   retries: number;
   openSession(): Promise<SsoBrowserSession>;
   validateToken(token: string, previous?: StoredToken): Promise<StoredToken>;
-  audit?(event: "renewal_started" | "renewal_succeeded" | "renewal_failed", fields?: Record<string, unknown>): void;
+  audit?(event: SsoRenewalAuditEvent, fields?: Record<string, unknown>): void;
   now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  random?: () => number;
 }
 
-interface AutomaticRenewalControl {
-  isAutomaticRenewalAllowed?(): boolean;
-  blockAutomaticRenewal?(): void;
+function failureKind(error: unknown): SsoFailureKind {
+  return error instanceof SsoLoginError ? error.kind : "transient";
 }
 
-/** Owns one realm's validated SSO token and makes renewal single-flight. */
+function blockedMessage(reason: BlockReason): string {
+  return `TeamDynamix sign-in required: ${describeBlockReason(reason)}. Run \`npm run login\` before retrying.`;
+}
+
+/**
+ * Owns one realm's token renewal: single-flight, classified failures, bounded
+ * backoff. A still-valid token is never made unusable by a failed renewal.
+ */
 export class SsoRenewalManager {
   private readonly now: () => number;
+  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly random: () => number;
   private inFlight: Promise<string> | undefined;
   private timer: NodeJS.Timeout | undefined;
+  private consecutiveFailures = 0;
+  private retryNotBeforeMs = 0;
 
   constructor(private readonly dependencies: SsoRenewalDependencies) {
     this.now = dependencies.now ?? Date.now;
+    this.sleep = dependencies.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.random = dependencies.random ?? Math.random;
   }
 
   start(): void {
-    this.schedule(this.dependencies.store.read());
+    const status = this.dependencies.state.status();
+    if (status.kind === "usable") this.scheduleAt(status.token.expiresAtMs - this.dependencies.leadMs);
+    else if (status.kind === "needs-renewal" && status.token) this.scheduleAt(this.now());
   }
 
   stop(): void {
@@ -39,88 +89,122 @@ export class SsoRenewalManager {
   }
 
   async getUsableToken(): Promise<string> {
-    if (!this.isAutomaticRenewalAllowed()) {
-      throw new SsoActionRequiredError("TeamDynamix sign-in required: run `npm run login` before retrying.");
+    const status = this.dependencies.state.status();
+    switch (status.kind) {
+      case "action-required":
+        throw new SsoActionRequiredError(blockedMessage(status.reason));
+      case "renewal-blocked":
+        // Renewal is blocked, but this token is still valid: serve it until it expires.
+        return status.token.token;
+      case "usable": {
+        const remainingMs = status.token.expiresAtMs - this.now();
+        if (remainingMs > this.dependencies.leadMs) {
+          this.scheduleAt(status.token.expiresAtMs - this.dependencies.leadMs);
+          return status.token.token;
+        }
+        if (remainingMs > RENEWAL_SAFETY_MS) {
+          this.renewInBackground(status.token);
+          return status.token.token;
+        }
+        return this.renewForeground(status.token);
+      }
+      case "needs-renewal":
+        return this.renewForeground(status.token);
     }
-    const current = this.dependencies.store.read();
-    const now = this.now();
-    if (current && current.expiresAtMs > now && current.expiresAtMs - now > this.dependencies.leadMs) {
-      this.schedule(current);
-      return current.token;
-    }
+  }
 
+  private renewInBackground(previous: StoredToken): void {
+    if (this.inFlight || this.now() < this.retryNotBeforeMs) return;
+    void this.renew(previous).catch(() => undefined);
+  }
+
+  /** The caller needs a token now. Whatever the failure, serve a still-valid token if one exists. */
+  private async renewForeground(previous: StoredToken | undefined): Promise<string> {
     try {
-      return await this.renew(current);
+      return await this.renew(previous);
     } catch (error) {
-      if (error instanceof SsoLoginError) {
-        this.blockAutomaticRenewal();
-        this.stop();
-        throw new SsoActionRequiredError(
-          `TeamDynamix sign-in required: ${error.message} Run \`npm run login\` before retrying.`
-        );
-      }
-      if (current && current.expiresAtMs > now) {
-        this.schedule(current, 60_000);
-        return current.token;
-      }
-      throw new SsoActionRequiredError(
-        `TeamDynamix sign-in required: silent SSO renewal could not complete. ${
-          error instanceof Error ? error.message : "Complete the approved SSO sign-in flow, then retry."
-        }`
+      const status = this.dependencies.state.status();
+      if (status.kind === "usable" || status.kind === "renewal-blocked") return status.token.token;
+      if (status.kind === "action-required") throw new SsoActionRequiredError(blockedMessage(status.reason));
+      const detail = error instanceof SsoLoginError ? ` (${error.message})` : "";
+      throw new SsoUnavailableError(
+        `TeamDynamix sign-in could not be renewed right now${detail}. Retry shortly, or run \`npm run login\`.`
       );
     }
   }
 
-  private isAutomaticRenewalAllowed(): boolean {
-    return (this.dependencies.store as TokenStore & AutomaticRenewalControl).isAutomaticRenewalAllowed?.() ?? true;
-  }
-
-  private blockAutomaticRenewal(): void {
-    (this.dependencies.store as TokenStore & AutomaticRenewalControl).blockAutomaticRenewal?.();
-  }
-
-  private async renew(previous: StoredToken | undefined): Promise<string> {
+  private renew(previous: StoredToken | undefined): Promise<string> {
     if (!this.inFlight) {
-      this.inFlight = this.runRenewal(previous).finally(() => {
+      this.inFlight = this.attemptRenewal(previous).finally(() => {
         this.inFlight = undefined;
       });
     }
     return this.inFlight;
   }
 
-  private async runRenewal(previous: StoredToken | undefined): Promise<string> {
+  private async attemptRenewal(previous: StoredToken | undefined): Promise<string> {
+    const { state, retries } = this.dependencies;
+    const epochAtStart = state.epoch();
     let lastError: unknown;
-    for (let attempt = 0; attempt <= this.dependencies.retries; attempt += 1) {
+
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      if (attempt > 0 && state.epoch() !== epochAtStart) throw new SsoRenewalDiscardedError();
       let session: SsoBrowserSession | undefined;
       try {
         this.dependencies.audit?.("renewal_started");
         session = await this.dependencies.openSession();
         const minted = await session.mintToken();
         const stored = await this.dependencies.validateToken(minted, previous);
-        this.dependencies.store.write(stored);
+        if (!state.commitRenewal(stored, epochAtStart)) {
+          this.dependencies.audit?.("renewal_discarded");
+          throw new SsoRenewalDiscardedError();
+        }
         this.dependencies.audit?.("renewal_succeeded", { uid: stored.uid, expiresAtMs: stored.expiresAtMs });
-        this.schedule(stored);
+        this.consecutiveFailures = 0;
+        this.retryNotBeforeMs = 0;
+        this.scheduleAt(stored.expiresAtMs - this.dependencies.leadMs);
         return stored.token;
       } catch (error) {
+        if (error instanceof SsoRenewalDiscardedError) throw error;
         lastError = error;
-        this.dependencies.audit?.("renewal_failed", {
-          reason: error instanceof SsoLoginError ? "policy" : "transient",
-        });
-        if (error instanceof SsoLoginError) break;
+        const kind = failureKind(error);
+        this.dependencies.audit?.("renewal_failed", { kind });
+        if (!isRetryable(kind)) {
+          if (state.blockRenewal(kind, epochAtStart)) this.dependencies.audit?.("renewal_blocked", { kind });
+          this.stop();
+          throw error;
+        }
+        if (attempt < retries) {
+          await this.sleep(backoffDelayMs(attempt, IN_CALL_BASE_MS, IN_CALL_CAP_MS, this.random));
+        }
       } finally {
         await session?.close();
       }
     }
+
+    this.scheduleRetryAfterTransientFailure();
     throw lastError;
   }
 
-  private schedule(token: StoredToken | undefined, minimumDelayMs = 0): void {
+  /** Transient failures never block. They retry later with growing delay, but not past the token's expiry. */
+  private scheduleRetryAfterTransientFailure(): void {
+    const status = this.dependencies.state.status();
+    if (status.kind !== "usable" && status.kind !== "needs-renewal") return;
+    this.consecutiveFailures += 1;
+    const delayMs = backoffDelayMs(this.consecutiveFailures - 1, RETRY_BASE_MS, RETRY_CAP_MS, this.random);
+    const latestRetryMs =
+      status.kind === "usable" ? status.token.expiresAtMs - RENEWAL_SAFETY_MS - this.now() : Number.POSITIVE_INFINITY;
+    const boundedMs = Math.max(MIN_RETRY_MS, Math.min(delayMs, latestRetryMs));
+    this.retryNotBeforeMs = this.now() + boundedMs;
+    this.scheduleAt(this.retryNotBeforeMs);
+  }
+
+  private scheduleAt(whenMs: number): void {
     this.stop();
-    if (!token) return;
-    const delayMs = Math.max(minimumDelayMs, token.expiresAtMs - this.now() - this.dependencies.leadMs);
     this.timer = setTimeout(() => {
+      this.timer = undefined;
       void this.getUsableToken().catch(() => undefined);
-    }, delayMs);
+    }, Math.max(0, whenMs - this.now()));
     this.timer.unref?.();
   }
 }

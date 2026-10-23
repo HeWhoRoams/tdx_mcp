@@ -1,5 +1,4 @@
 import axios, { AxiosError, AxiosInstance } from "axios";
-import { createHash } from "node:crypto";
 import { Agent as HttpAgent } from "node:http";
 import { Agent as HttpsAgent } from "node:https";
 import { getConfig } from "../config.js";
@@ -9,11 +8,15 @@ import { createTokenStore, type TokenStore } from "./token-store.js";
 import { getReferenceCache, getRecordCache, scopedCacheKey } from "./cache.js";
 import { ssoLoginRequiredMessage } from "../auth/sso-login.js";
 import { createSsoLifecycle, type SsoLifecycle } from "../auth/sso-lifecycle.js";
+import { SSO_ACTION_REQUIRED, SSO_RENEWAL_UNAVAILABLE, SsoUnavailableError } from "../auth/sso-errors.js";
 
 export class TeamDynamixAuthError extends Error {}
 
 /** Signed in as the user, but TeamDynamix says this user may not do that. */
 export class TeamDynamixPermissionError extends Error {}
+
+/** Signed in, but TeamDynamix could not confirm the sign-in right now (timeout, 429, 5xx). Nothing was discarded. */
+export class TeamDynamixTransientAuthError extends Error {}
 
 /** A request that the tool policy forbids reached the transport anyway. */
 export class TeamDynamixPolicyError extends Error {}
@@ -94,7 +97,6 @@ export class TeamDynamixClient {
   private readonly tokens: TokenStore;
   private readonly ssoLifecycle: SsoLifecycle | undefined;
   private loginInFlight: Promise<string> | undefined;
-  private lastSsoProbeOk: { tokenFingerprint: string; atMs: number } | undefined;
   private readonly inFlight = new Map<string, Promise<unknown>>();
 
   constructor() {
@@ -111,8 +113,12 @@ export class TeamDynamixClient {
       headers: { "Content-Type": "application/json", Accept: "application/json" },
     });
     if (config.auth.method === "sso") {
-      this.ssoLifecycle = createSsoLifecycle(config, this.tokens, (event, fields) =>
-        logger.info("sso lifecycle", { event, realm: config.apiBaseUrl, expectedUser: config.auth.method === "sso" ? config.auth.expectedUser : undefined, ...fields })
+      this.ssoLifecycle = createSsoLifecycle(
+        config,
+        this.tokens,
+        (event, fields) =>
+          logger.info("sso lifecycle", { event, realm: config.apiBaseUrl, expectedUser: config.auth.method === "sso" ? config.auth.expectedUser : undefined, ...fields }),
+        { probe: (token) => this.probeGetUser(token) }
       );
       this.ssoLifecycle.start();
     }
@@ -153,28 +159,14 @@ export class TeamDynamixClient {
     }
   }
 
-  /**
-   * TeamDynamix answers 401 both for an expired token and for "this user may not
-   * do that". With SSO the token is precious (it needs a human to renew), so a
-   * 401 on a token that has not expired is checked against /auth/getuser before
-   * it is thrown away.
-   */
-  private async ssoTokenStillValid(token: string): Promise<boolean> {
-    const expiresAtMs = decodeJwtExpiryMs(token);
-    if (expiresAtMs !== undefined && expiresAtMs <= Date.now()) return false;
-    const tokenFingerprint = createHash("sha256").update(token).digest("hex");
-    if (
-      this.lastSsoProbeOk?.tokenFingerprint === tokenFingerprint &&
-      Date.now() - this.lastSsoProbeOk.atMs < 60_000
-    ) {
-      return true;
-    }
+  /** Asks TeamDynamix whether it still accepts a token. Only 401/3xx count as rejection; anything else is unknown. */
+  private async probeGetUser(token: string): Promise<"ok" | "unauthorized" | "unknown"> {
     try {
       await this.http.get("/auth/getuser", { headers: { Authorization: `Bearer ${token}` }, maxRedirects: 0 });
-      this.lastSsoProbeOk = { tokenFingerprint, atMs: Date.now() };
-      return true;
-    } catch {
-      return false;
+      return "ok";
+    } catch (error) {
+      const status = error instanceof AxiosError ? error.response?.status : undefined;
+      return status === 401 || (status !== undefined && status >= 300 && status < 400) ? "unauthorized" : "unknown";
     }
   }
 
@@ -183,8 +175,11 @@ export class TeamDynamixClient {
       try {
         return await this.ssoLifecycle.authorization();
       } catch (error) {
+        if (error instanceof SsoUnavailableError) {
+          throw new TeamDynamixAuthError(`${SSO_RENEWAL_UNAVAILABLE}: ${error.message}`);
+        }
         throw new TeamDynamixAuthError(
-          `SSO_ACTION_REQUIRED: ${ssoLoginRequiredMessage(getConfig().apiBaseUrl, this.tokens.read())} ${
+          `${SSO_ACTION_REQUIRED}: ${ssoLoginRequiredMessage(getConfig().apiBaseUrl, this.tokens.read())} ${
             error instanceof Error ? error.message : ""
           }`.trim()
         );
@@ -339,16 +334,22 @@ export class TeamDynamixClient {
         attempt += 1;
         const retryAfterMs = parseRetryAfterMs(error.response?.headers?.["retry-after"]);
 
-        if (status === 401 && getConfig().auth.method === "sso") {
-          if (await this.ssoTokenStillValid(token)) {
+        if (status === 401 && this.ssoLifecycle) {
+          const verdict = await this.ssoLifecycle.handleUnauthorized(token);
+          if (verdict === "permission-denied") {
             throw new TeamDynamixPermissionError(
               `TeamDynamix denied ${method} ${path}. You are signed in as yourself, so your own TeamDynamix role or application access does not allow this.`
             );
           }
-          this.tokens.clear();
-          this.lastSsoProbeOk = undefined;
+          if (verdict === "unknown") {
+            throw new TeamDynamixTransientAuthError(
+              "TeamDynamix could not confirm your sign-in just now (it did not answer cleanly). Your saved sign-in was kept; retry shortly."
+            );
+          }
+          // "expired" or "revoked": the lifecycle has already updated its state, so
+          // getToken() now renews, or reports that a new sign-in is required.
           increment("retries");
-          continue; // getToken() now reports that a new sign-in is required
+          continue;
         }
 
         if (status === 401 && !refreshedToken) {
@@ -428,7 +429,10 @@ export function handleApiError(error: unknown): string {
   if (error instanceof TeamDynamixAuthError) {
     return `Error: ${error.message}`;
   }
-  if (error instanceof TeamDynamixPolicyError || error instanceof TeamDynamixPermissionError) {
+  if (error instanceof TeamDynamixPolicyError ||
+    error instanceof TeamDynamixPermissionError ||
+    error instanceof TeamDynamixTransientAuthError
+  ) {
     return `Error: ${error.message}`;
   }
   if (error instanceof AxiosError) {

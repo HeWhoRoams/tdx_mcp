@@ -12,13 +12,14 @@ type ConnectedBrowser = { newPage(): Promise<RenewalPage> };
 export type ConnectOverCdp = (endpoint: string) => Promise<ConnectedBrowser>;
 
 async function defaultConnectOverCdp(endpoint: string): Promise<ConnectedBrowser> {
+  const moduleName = "playwright-core";
+  let playwright: any;
   try {
-    const moduleName = "playwright-core";
-    const playwright: any = await import(moduleName);
-    return playwright.chromium.connectOverCDP(endpoint) as Promise<ConnectedBrowser>;
+    playwright = await import(moduleName);
   } catch {
-    throw new SsoLoginError("Could not attach to the configured Hermes browser session.");
+    throw new SsoLoginError("Attaching to the Hermes browser needs the optional playwright-core package.", "configuration");
   }
+  return playwright.chromium.connectOverCDP(endpoint) as Promise<ConnectedBrowser>;
 }
 
 /**
@@ -32,14 +33,17 @@ export async function openHermesCdpBrowserSession(
   let browser: ConnectedBrowser;
   try {
     browser = await connect(options.cdpEndpoint);
-  } catch {
-    throw new SsoLoginError("The configured Hermes CDP browser is unavailable.");
+  } catch (error) {
+    // A missing playwright-core is a setup problem; an unreachable browser is worth retrying.
+    throw error instanceof SsoLoginError && error.kind === "configuration"
+      ? error
+      : new SsoLoginError("The configured Hermes CDP browser is unavailable.", "transient");
   }
   let page: RenewalPage;
   try {
     page = await browser.newPage();
   } catch {
-    throw new SsoLoginError("Could not create the owned Hermes SSO renewal tab.");
+    throw new SsoLoginError("Could not create the owned Hermes SSO renewal tab.", "transient");
   }
   return {
     mintToken: () => waitForJwt(page, options.apiBaseUrl, options.timeoutMs),

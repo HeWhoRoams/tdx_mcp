@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, renameSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { getConfig } from "../config.js";
@@ -94,7 +94,7 @@ class FileTokenStore implements TokenStore {
 }
 
 /**
- * Per-user SSO token on disk. The login CLI writes it while the server may be
+ * Per-user SSO token on disk (pure persistence: sign-in state transitions live in CredentialState). The login CLI writes it while the server may be
  * running, so read() reloads whenever the file's mtime changes (a fresh
  * `npm run login` takes effect with no restart). If the owner of the token
  * changes, every cache is purged so one identity's results never reach another.
@@ -106,22 +106,14 @@ export class SsoTokenStore implements TokenStore {
 
   constructor(private readonly path: string) {}
 
-  /** A logout or an interactive-policy failure must require an explicit CLI login. */
-  isAutomaticRenewalAllowed(): boolean {
-    return !existsSync(`${this.path}.action-required`);
+  /** Renewal state (epoch, blocked or allowed) lives beside the token, owned by CredentialState. */
+  get statePath(): string {
+    return `${this.path}.state.json`;
   }
 
-  blockAutomaticRenewal(): void {
-    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
-    writeFileSync(`${this.path}.action-required`, "interactive login required\n", { mode: 0o600 });
-  }
-
-  private allowAutomaticRenewal(): void {
-    try {
-      unlinkSync(`${this.path}.action-required`);
-    } catch {
-      // The marker is absent, which is already the desired state.
-    }
+  /** Marker written by the first SSO release; migrated into the state file on first read. */
+  get legacyMarkerPath(): string {
+    return `${this.path}.action-required`;
   }
 
   read(): StoredToken | undefined {
@@ -165,7 +157,6 @@ export class SsoTokenStore implements TokenStore {
       resetCaches();
     }
     if (token.uid !== undefined) this.lastUid = token.uid;
-    this.allowAutomaticRenewal();
   }
 
   clear(): void {
@@ -176,7 +167,6 @@ export class SsoTokenStore implements TokenStore {
     } catch {
       // Nothing stored.
     }
-    this.blockAutomaticRenewal();
   }
 }
 

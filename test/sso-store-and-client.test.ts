@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserProfileDir, ssoTokenPath } from "../src/auth/paths.js";
 import { ConfigError, getConfig, resetConfig } from "../src/config.js";
 import { getReferenceCache, resetCaches } from "../src/services/cache.js";
-import { getClient, resetClient, TeamDynamixAuthError, TeamDynamixPermissionError } from "../src/services/client.js";
+import { getClient, resetClient, TeamDynamixAuthError, TeamDynamixTransientAuthError, TeamDynamixPermissionError } from "../src/services/client.js";
 import { SsoTokenStore, type StoredToken } from "../src/services/token-store.js";
 
 const API = "https://example.teamdynamix.com/SBTDWebApi/api";
@@ -164,14 +164,11 @@ describe("sso client", () => {
     expect(existsSync(path)).toBe(false);
   });
 
-  it("does not reuse a successful token probe for a different token", async () => {
-    stub(async () => ({ status: 200, data: {} }), async () => ({ status: 200 }));
-    const client = getClient() as unknown as { ssoTokenStillValid(token: string): Promise<boolean> };
-    const tokenA = jwt(7200);
-    const tokenB = `${jwt(7200)}-replacement`;
-    await expect(client.ssoTokenStillValid(tokenA)).resolves.toBe(true);
-    vi.mocked(axios.create).mock.results[0]?.value.get.mockRejectedValueOnce(unauthorized());
-    await expect(client.ssoTokenStillValid(tokenB)).resolves.toBe(false);
+  it("a probe timeout after a 401 keeps the token and reports a transient failure", async () => {
+    const path = saveToken({ token: jwt(7200), expiresAtMs: Date.now() + 7_200_000, uid: "u" });
+    stub(async () => { throw unauthorized(); }, async () => { throw Object.assign(new Error("timeout"), { code: "ECONNABORTED" }); });
+    await expect(getClient().request("/people")).rejects.toThrow(TeamDynamixTransientAuthError);
+    expect(existsSync(path)).toBe(true);
   });
 
   it("treats an expired token as expired without probing", async () => {
