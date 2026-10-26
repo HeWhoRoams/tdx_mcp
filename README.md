@@ -1,6 +1,6 @@
 # TeamDynamix MCP Server
 
-**Version:** 2.1.0 · **Last updated:** 2026-10-23
+**Version:** 2.1.1 · **Last updated:** 2026-10-26
 
 An MCP (Model Context Protocol) server that lets LLM agents interact with the
 [TeamDynamix Web API](https://solutions.teamdynamix.com/TDWebApi/) — tickets,
