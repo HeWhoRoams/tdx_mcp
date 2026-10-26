@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TeamDynamix MCP tool policy",
+  "description": "Controls which TeamDynamix MCP tools may be registered and invoked.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "defaults": {
+      "description": "Baseline rule per capability tier.",
+      "$ref": "#/definitions/capabilityRules"
+    },
+    "domains": {
+      "description": "Per-domain overrides of the capability defaults.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "auth": { "$ref": "#/definitions/capabilityRules" },
+        "tickets": { "$ref": "#/definitions/capabilityRules" },
+        "assets": { "$ref": "#/definitions/capabilityRules" },
+        "cmdb": { "$ref": "#/definitions/capabilityRules" },
+        "projects": { "$ref": "#/definitions/capabilityRules" },
+        "issues": { "$ref": "#/definitions/capabilityRules" },
+        "people": { "$ref": "#/definitions/capabilityRules" },
+        "reference": { "$ref": "#/definitions/capabilityRules" },
+        "reports": { "$ref": "#/definitions/capabilityRules" }
+      }
+    },
+    "tools": {
+      "description": "Per-tool overrides. 'inherit' defers to the domain rule, then the capability default.",
+      "type": "object",
+      "additionalProperties": { "$ref": "#/definitions/rule" }
+    },
+    "treatReadModifyWriteAsDestroy": {
+      "description": "Judge tools that GET a record and write the whole thing back under the 'destroy' tier.",
+      "type": "boolean"
+    }
+  },
+  "definitions": {
+    "rule": {
+      "type": "string",
+      "enum": ["allow", "deny", "inherit"]
+    },
+    "capabilityRules": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "read": { "$ref": "#/definitions/rule" },
+        "create": { "$ref": "#/definitions/rule" },
+        "edit": { "$ref": "#/definitions/rule" },
+        "destroy": { "$ref": "#/definitions/rule" }
+      }
+    }
+  }
+}
