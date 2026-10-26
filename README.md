@@ -49,7 +49,7 @@ Notes: TeamDynamix tokens last 24 hours and have no refresh token. After the fir
 
 **Upgrading from the first SSO release:** if `TEAMDYNAMIX_SSO_EXPECTED_USER` is set, an existing saved sign-in is carried over after TeamDynamix confirms it is yours. Otherwise it is left untouched and you simply run `npm run login`. With `TEAMDYNAMIX_MCP_DEPLOYMENT=external`, `logout --all` cannot end the Hermes browser's SSO session; ask the Hermes operator.
 
-### External Hermes SSO
+### External Hermes SSO (Still a work in progress)
 
 Set `TEAMDYNAMIX_MCP_DEPLOYMENT=external` for one persistent Hermes workspace and one assigned user. This requires `TRANSPORT=http`, loopback `HOST`, a separate `MCP_AUTH_TOKEN`, `TEAMDYNAMIX_SSO_EXPECTED_USER`, and `TEAMDYNAMIX_SSO_CDP_ENDPOINT=http://127.0.0.1:9222`. The server attaches only to that configured CDP endpoint and creates an owned renewal tab; it never forwards a TeamDynamix token through MCP. Validate the sandbox with `npm run test:hermes-sso -- --realm sandbox`. See [Hermes rollout](docs/operations/hermes-sso-rollout.md).
 
