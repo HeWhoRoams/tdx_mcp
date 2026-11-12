@@ -1,0 +1,4 @@
+#!/bin/sh
+# Blocks a commit that adds credentials, tenant URLs or organization identifiers, and checks the
+# identity the commit will carry. Enable once per clone:  git config core.hooksPath .githooks
+exec node scripts/check-sensitive.mjs --staged --require-terms
