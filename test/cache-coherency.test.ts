@@ -89,6 +89,28 @@ describe("write invalidation racing an in-flight read", () => {
     expect(getRecordCache().get("/49/tickets/500")).toEqual({ ID: 500, StatusName: "fresh" });
   });
 
+  it("shares one background refresh between concurrent stale reads", async () => {
+    const pending = deferredResponse();
+    const request = stubTransport(pending.responder);
+
+    getReferenceCache().set("/applications", [{ AppID: 1, Name: "old" }], 1);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const reads = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        getClient().request("/applications", { cacheKey: "/applications", cacheTtlMs: 600_000 })
+      )
+    );
+    for (const read of reads) expect(read).toEqual([{ AppID: 1, Name: "old" }]);
+
+    await pending.dispatched;
+    pending.release([{ AppID: 1, Name: "new" }]);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(getReferenceCache().get("/applications")).toEqual([{ AppID: 1, Name: "new" }]);
+  });
+
   it("does not let a stale-while-revalidate refresh resurrect invalidated data", async () => {
     const pending = deferredResponse();
     stubTransport(pending.responder);

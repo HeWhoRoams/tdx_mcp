@@ -13,6 +13,8 @@ export interface PaginatedResult<T> {
   next_cursor?: string;
   /** True when `total` is a floor: TeamDynamix returned a full window, so more may exist. */
   total_is_lower_bound?: boolean;
+  /** True when the results were ordered, but only within the first window of matches. */
+  sorted_within_window?: boolean;
 }
 
 /**
@@ -71,6 +73,8 @@ export interface TdApp {
   AppID: number;
   Name: string;
   Type: string;
+  /** Stable application code (TDTickets, TDAssets, TDProjects, ...); Type is only a display label. */
+  AppClass?: string;
   Active?: boolean;
   Description?: string;
   [key: string]: unknown;

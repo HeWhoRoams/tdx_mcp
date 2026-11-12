@@ -2,14 +2,20 @@ import axios from "axios";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildStoredToken, decodeJwtClaims, extractJwt, loginSsoUrl, matchesExpectedUser, ssoLoginRequiredMessage } from "../src/auth/sso-login.js";
 
-const JWT =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1bmlxdWVfbmFtZSI6InVzZXJAZXhhbXBsZS5jb20iLCJ0ZHhfZW50aXR5IjoiMjE5IiwidGR4X3BhcnRpdGlvbiI6IjgiLCJleHAiOjE3OTI4NTk1Nzd9.sig-_x";
+const b64 = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
+// Built at runtime with neutral claim values so no tenant identifiers live in the repo.
+const JWT = `${b64({ alg: "HS256", typ: "JWT" })}.${b64({
+  unique_name: "user@example.com",
+  tdx_entity: "1",
+  tdx_partition: "1",
+  exp: 1792859577,
+})}.sig-_x`;
 
 describe("extractJwt", () => {
   it("finds a bare token", () => expect(extractJwt(JWT)).toBe(JWT));
   it("finds a JSON-quoted token", () => expect(extractJwt(`"${JWT}"`)).toBe(JWT));
   it("finds a token wrapped in HTML", () => expect(extractJwt(`<html><body><pre>${JWT}</pre></body></html>`)).toBe(JWT));
-  it("returns undefined for a login page", () => expect(extractJwt("<html>Sign in with your CMU account</html>")).toBeUndefined());
+  it("returns undefined for a login page", () => expect(extractJwt("<html>Sign in with your organization account</html>")).toBeUndefined());
   it("returns the first token when there are two", () => expect(extractJwt(`${JWT} eyJa.eyJb.c`)).toBe(JWT));
 });
 
@@ -17,7 +23,7 @@ describe("decodeJwtClaims", () => {
   it("reads the identity and tenant claims", () => {
     const claims = decodeJwtClaims(JWT);
     expect(claims?.unique_name).toBe("user@example.com");
-    expect(claims?.tdx_entity).toBe("219");
+    expect(claims?.tdx_entity).toBe("1");
     expect(claims?.exp).toBe(1792859577);
   });
   it("returns undefined for garbage", () => expect(decodeJwtClaims("nope")).toBeUndefined());

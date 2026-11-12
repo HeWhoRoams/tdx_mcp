@@ -1,13 +1,11 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { getConfig } from "../config.js";
+import { appKeyOf } from "../policy/availability.js";
 import { tdRequest } from "../services/client.js";
 import { toCompactJson } from "../services/format.js";
+import { loadReference, TICKET_KINDS } from "../tools/reference.js";
 import type { TdApp } from "../types.js";
-
-interface NamedRef {
-  ID: number;
-  Name: string;
-}
 
 /**
  * Reference data is also exposed as resources so hosts can pin it to context
@@ -37,7 +35,7 @@ export function registerResources(server: McpServer): void {
         const apps = await tdRequest<TdApp[]>("/applications", { cacheKey: "/applications", cacheTtlMs: ttlMs });
         return {
           resources: apps
-            .filter((app) => app.Type === "Ticketing" && app.Active !== false)
+            .filter((app) => appKeyOf(app) === "tickets" && app.Active !== false)
             .map((app) => ({
               uri: `tdx://${app.AppID}/ticket-reference`,
               name: `${app.Name} ticket reference`,
@@ -52,18 +50,24 @@ export function registerResources(server: McpServer): void {
       mimeType: "application/json",
     },
     async (uri, variables) => {
-      const appId = Number(variables.appId);
-      const [types, statuses, priorities] = await Promise.all([
-        tdRequest<NamedRef[]>(`/${appId}/tickets/types`, { cacheKey: `/${appId}/tickets/types`, cacheTtlMs: ttlMs }),
-        tdRequest<NamedRef[]>(`/${appId}/tickets/statuses`, { cacheKey: `/${appId}/tickets/statuses`, cacheTtlMs: ttlMs }),
-        tdRequest<NamedRef[]>(`/${appId}/tickets/priorities`, { cacheKey: `/${appId}/tickets/priorities`, cacheTtlMs: ttlMs }),
-      ]);
+      const rawAppId = String(variables.appId);
+      if (!/^[1-9]\d*$/.test(rawAppId)) {
+        throw new McpError(ErrorCode.InvalidParams, "appId must be a positive integer");
+      }
+      const appId = Number(rawAppId);
+      const { reference, errors } = await loadReference(appId, TICKET_KINDS, ["types", "statuses", "priorities"]);
       return {
         contents: [
           {
             uri: uri.href,
             mimeType: "application/json",
-            text: toCompactJson({ appId, types, statuses, priorities }),
+            text: toCompactJson({
+              appId,
+              types: reference.types ?? [],
+              statuses: reference.statuses ?? [],
+              priorities: reference.priorities ?? [],
+              ...(Object.keys(errors).length > 0 ? { errors } : {}),
+            }),
           },
         ],
       };

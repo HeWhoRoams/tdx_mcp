@@ -64,6 +64,8 @@ async function startServer(): Promise<number> {
       MCP_AUTH_TOKEN: MCP_SECRET,
       TDX_HOME: tdxHome,
       TDX_LOG_LEVEL: "silent",
+      // These checks are about authentication; keep the tool list and network traffic fixed.
+      TDX_APP_GATING: "off",
     },
     stdio: ["ignore", "ignore", "ignore"],
   });
@@ -113,7 +115,7 @@ describe("loopback HTTP with SSO", () => {
         requestInit: { headers: { Authorization: `Bearer ${MCP_SECRET}` } },
       })
     );
-    await client.callTool({ name: "teamdynamix_get_current_user", arguments: {} });
+    await client.callTool({ name: "tdx_get_current_user", arguments: {} });
     await client.close();
 
     const withAuth = seen.filter((headers) => headers.authorization);

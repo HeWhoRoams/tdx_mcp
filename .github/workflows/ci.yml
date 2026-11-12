@@ -6,6 +6,14 @@ on:
   pull_request:
     branches: [main]
 
+# Default-deny: every job below declares exactly what it needs.
+# Never switch the trigger to `pull_request_target`; it would run fork code with write tokens.
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build
@@ -14,9 +22,11 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
           cache: "npm"
@@ -28,3 +38,92 @@ jobs:
       - run: npm run check:scripts
       - run: npm run test:url
       - run: npm run test:mcp
+
+  sensitive-scan:
+    name: Sensitive content scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Set the repository variable SENSITIVE_SCAN_REPORT_ONLY to "true" to report findings without
+    # failing the job (rollout or false-positive triage). Leave it unset to enforce.
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0 # the range scan and gitleaks need the full history
+          persist-credentials: false
+
+      # The scanner has no dependencies, so it runs before any `npm install`.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+
+      - name: Resolve scan range
+        id: range
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          HEAD_SHA="${PR_HEAD:-$PUSH_SHA}"   # the PR head, not the synthetic merge commit
+          BASE="${PR_BASE:-$PUSH_BEFORE}"
+          ZERO="0000000000000000000000000000000000000000"
+          if [ -z "$BASE" ] || [ "$BASE" = "$ZERO" ] || ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+            # New branch, first push, or a force-push that orphaned the old base.
+            BASE="$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null || true)"
+          fi
+          if [ -n "$BASE" ]; then
+            echo "spec=${BASE}..${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+          else
+            echo "spec=${HEAD_SHA}" >> "$GITHUB_OUTPUT"   # no common ancestor: scan the whole history
+          fi
+
+      - name: Project rules (every tracked file)
+        continue-on-error: ${{ vars.SENSITIVE_SCAN_REPORT_ONLY == 'true' }}
+        run: node scripts/check-sensitive.mjs --tree --require-terms
+
+      - name: Project rules (every commit and its metadata)
+        continue-on-error: ${{ vars.SENSITIVE_SCAN_REPORT_ONLY == 'true' }}
+        env:
+          SPEC: ${{ steps.range.outputs.spec }}
+        run: node scripts/check-sensitive.mjs --range "$SPEC" --require-terms
+
+      # Gitleaks 8.30.1 or newer is required: earlier releases are affected by CVE-2026-63728
+      # (report-template injection). No report templates are used here. Bump the version and the
+      # checksum together; the checksum comes from the release's checksums file.
+      - name: Gitleaks (generic secrets)
+        continue-on-error: ${{ vars.SENSITIVE_SCAN_REPORT_ONLY == 'true' }}
+        env:
+          GL_VERSION: "8.30.1"
+          GL_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+          SPEC: ${{ steps.range.outputs.spec }}
+        run: |
+          set -euo pipefail
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GL_VERSION}/gitleaks_${GL_VERSION}_linux_x64.tar.gz"
+          echo "${GL_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" git --redact --no-banner --config .gitleaks.toml --log-opts="$SPEC" .
+
+  package-check:
+    name: Published package contents
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: Check what would be published
+        run: node scripts/check-package.mjs

@@ -3,7 +3,7 @@ import { ConfigError, getConfig, resetConfig, resolveApiBaseUrl } from "../src/c
 
 const REQUIRED = {
   TEAMDYNAMIX_BASE_URL: "https://example.teamdynamix.com",
-  TEAMDYNAMIX_BEID: "beid-1",
+  TEAMDYNAMIX_BEID: "test-beid-1",
   TEAMDYNAMIX_WS_KEY: "key-1",
 };
 
@@ -50,6 +50,16 @@ describe("getConfig", () => {
     expect(() => getConfig()).toThrow(ConfigError);
   });
 
+  it("rejects admin auth with only a username and password (the rule scripts now inherit)", () => {
+    withEnv({
+      TEAMDYNAMIX_BASE_URL: REQUIRED.TEAMDYNAMIX_BASE_URL,
+      TEAMDYNAMIX_USERNAME: "u",
+      TEAMDYNAMIX_PASSWORD: "p",
+      TEAMDYNAMIX_AUTH_METHOD: "admin",
+    });
+    expect(() => getConfig()).toThrow(ConfigError);
+  });
+
   it("rejects missing credentials", () => {
     withEnv({ TEAMDYNAMIX_BASE_URL: REQUIRED.TEAMDYNAMIX_BASE_URL });
     expect(() => getConfig()).toThrow(/No TeamDynamix credentials configured/);
@@ -58,6 +68,15 @@ describe("getConfig", () => {
   it("rejects a missing base URL", () => {
     withEnv({ TEAMDYNAMIX_BEID: "b", TEAMDYNAMIX_WS_KEY: "k" });
     expect(() => getConfig()).toThrow(ConfigError);
+  });
+
+  it("requires a strong bearer token on a non-loopback host, but not on loopback", () => {
+    withEnv({ ...REQUIRED, TRANSPORT: "http", HOST: "0.0.0.0", MCP_AUTH_TOKEN: "test" });
+    expect(() => getConfig()).toThrow(/at least 24 characters/);
+    withEnv({ ...REQUIRED, TRANSPORT: "http", HOST: "0.0.0.0", MCP_AUTH_TOKEN: "test-" + "x".repeat(27) });
+    expect(() => getConfig()).not.toThrow();
+    withEnv({ ...REQUIRED, TRANSPORT: "http", HOST: "127.0.0.1", MCP_AUTH_TOKEN: "test" });
+    expect(() => getConfig()).not.toThrow();
   });
 
   it("requires a bearer token when bound to a non-loopback host over http", () => {
@@ -74,7 +93,7 @@ describe("getConfig", () => {
       TEAMDYNAMIX_SSO_CDP_ENDPOINT: "http://127.0.0.1:9222",
       TRANSPORT: "http",
       HOST: "127.0.0.1",
-      MCP_AUTH_TOKEN: "separate-mcp-secret",
+      MCP_AUTH_TOKEN: "test-separate-mcp-secret",
     });
     expect(getConfig().auth).toMatchObject({ method: "sso", deployment: "external" });
   });
@@ -127,5 +146,33 @@ describe("state home resolution", () => {
     expect(parseCliEnv({ TEAMDYNAMIX_SSO_EXPECTED_USER: " " }).TEAMDYNAMIX_SSO_EXPECTED_USER).toBeUndefined();
     expect(isLoopbackHost("::1")).toBe(true);
     expect(isLoopbackHost("0.0.0.0")).toBe(false);
+  });
+});
+
+describe("tool policy loading", () => {
+  it("surfaces a policy error as a ConfigError", () => {
+    try {
+      withEnv({ ...REQUIRED, TDX_TOOL_POLICY_FILE: "config/does-not-exist.json" });
+      expect(() => getConfig()).toThrow(ConfigError);
+    } finally {
+      delete process.env.TDX_TOOL_POLICY_FILE;
+      resetConfig();
+    }
+  });
+
+  it("resolves the default policy file from the project root, not the client's cwd", async () => {
+    const { tmpdir } = await import("node:os");
+    const { isAbsolute, basename } = await import("node:path");
+    const originalCwd = process.cwd();
+    process.chdir(tmpdir());
+    try {
+      withEnv({ ...REQUIRED });
+      const { toolPolicy } = getConfig();
+      expect(isAbsolute(toolPolicy.source)).toBe(true);
+      expect(basename(toolPolicy.source)).toBe("tool-policy.json");
+    } finally {
+      process.chdir(originalCwd);
+      resetConfig();
+    }
   });
 });

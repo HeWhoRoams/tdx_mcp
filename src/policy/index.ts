@@ -1,5 +1,5 @@
 import { CAPABILITIES, type Capability } from "../framework/annotations.js";
-import type { CapabilityRules, Rule, ToolDomain, ToolPolicyFile } from "./schema.js";
+import { TOOL_DOMAINS, type CapabilityRules, type Rule, type ToolDomain, type ToolPolicyFile } from "./schema.js";
 
 export { TOOL_DOMAINS, type Rule, type ToolDomain } from "./schema.js";
 
@@ -21,6 +21,12 @@ export interface ToolPolicy {
   denyTools: Set<string>;
   /** When present, only these tools may register, regardless of every other rule. */
   allowTools?: Set<string>;
+  /**
+   * When present, only tools in these domains may register, plus authentication and the reference
+   * lookups that serve a listed domain (so a ticket toolset keeps its type, status and priority lists).
+   * Narrows access only; it never grants a tier the capability rules deny.
+   */
+  toolsets?: Set<ToolDomain>;
   treatReadModifyWriteAsDestroy: boolean;
   readOnly: boolean;
   source: string;
@@ -33,6 +39,8 @@ export interface PolicySubject {
   domain?: ToolDomain;
   capability: Capability;
   readModifyWrite?: boolean;
+  /** Reference lookups: the domains they serve. Unset on a reference tool means a generic lookup. */
+  serves?: ToolDomain[];
 }
 
 export class ToolPolicyError extends Error {}
@@ -43,6 +51,8 @@ export interface PolicyInput {
   allowCapabilities?: string[];
   allowTools?: string[];
   denyTools?: string[];
+  /** From TDX_TOOLSETS; overrides the policy file's `toolsets`. */
+  toolsets?: string[];
   readOnly: boolean;
 }
 
@@ -62,12 +72,15 @@ export function resolveToolPolicy(input: PolicyInput): ToolPolicy {
     }
   }
 
+  const toolsets = parseToolsets(input.toolsets?.length ? input.toolsets : file.toolsets);
+
   const policy: ToolPolicy = {
     defaults,
     domains: (file.domains ?? {}) as Partial<Record<ToolDomain, CapabilityRules>>,
     tools: file.tools ?? {},
     denyTools: new Set(input.denyTools ?? []),
     ...(input.allowTools?.length ? { allowTools: new Set(input.allowTools) } : {}),
+    ...(toolsets ? { toolsets } : {}),
     treatReadModifyWriteAsDestroy: file.treatReadModifyWriteAsDestroy ?? false,
     readOnly: input.readOnly,
     source,
@@ -75,6 +88,26 @@ export function resolveToolPolicy(input: PolicyInput): ToolPolicy {
   };
   policy.mayModify = computeMayModify(policy);
   return policy;
+}
+
+function parseToolsets(names: readonly string[] | undefined): Set<ToolDomain> | undefined {
+  if (!names?.length) return undefined;
+  const unknown = names.filter((name) => !(TOOL_DOMAINS as readonly string[]).includes(name));
+  if (unknown.length > 0) {
+    throw new ToolPolicyError(`Unknown toolset(s) ${unknown.join(", ")}; expected any of ${TOOL_DOMAINS.join(", ")}.`);
+  }
+  return new Set(names as ToolDomain[]);
+}
+
+/**
+ * Authentication is always available. Reference lookups follow the domains they serve; a lookup that
+ * serves none (applications, accounts, locations, custom attributes) is generic and always available.
+ */
+function inToolsets(toolsets: ReadonlySet<ToolDomain>, subject: PolicySubject): boolean {
+  if (subject.domain === undefined || subject.domain === "auth") return true;
+  if (toolsets.has(subject.domain)) return true;
+  if (subject.domain !== "reference") return false;
+  return subject.serves === undefined || subject.serves.length === 0 || subject.serves.some((domain) => toolsets.has(domain));
 }
 
 /** The tier a tool is judged under, which read-modify-write can escalate. */
@@ -88,8 +121,8 @@ interface Decision {
 }
 
 /**
- * Rules are applied most specific first: hard lists, then the per-tool map, then
- * the domain map, then the capability defaults.
+ * Rules are applied most specific first: hard lists, then toolsets, then the per-tool
+ * map, then the domain map, then the capability defaults.
  */
 export function decideTool(policy: ToolPolicy, subject: PolicySubject): Decision {
   const capability = effectiveCapability(policy, subject);
@@ -106,6 +139,9 @@ export function decideTool(policy: ToolPolicy, subject: PolicySubject): Decision
   if (policy.allowTools) {
     return { allowed: true, reason: "TDX_ALLOW_TOOLS" };
   }
+  if (policy.toolsets && !inToolsets(policy.toolsets, subject)) {
+    return { allowed: false, reason: "not in toolsets" };
+  }
 
   const toolRule = policy.tools[subject.name];
   if (toolRule && toolRule !== "inherit") {
@@ -119,15 +155,6 @@ export function decideTool(policy: ToolPolicy, subject: PolicySubject): Decision
 
   const rule = policy.defaults[capability];
   return { allowed: rule === "allow", reason: `defaults.${capability}=${rule}` };
-}
-
-export function isToolAllowed(policy: ToolPolicy, subject: PolicySubject): boolean {
-  return decideTool(policy, subject).allowed;
-}
-
-export function explainToolPolicy(policy: ToolPolicy, subject: PolicySubject): string {
-  const decision = decideTool(policy, subject);
-  return `${subject.name}: ${decision.allowed ? "allowed" : "denied"} by ${decision.reason}`;
 }
 
 /**
@@ -149,5 +176,6 @@ function computeMayModify(policy: ToolPolicy): boolean {
 /** One-line summary for the startup log. */
 export function summarizePolicy(policy: ToolPolicy): string {
   const tiers = CAPABILITIES.map((capability) => `${capability}=${policy.defaults[capability]}`).join(" ");
-  return `${tiers} (source: ${policy.source})`;
+  const toolsets = policy.toolsets ? ` toolsets=${[...policy.toolsets].join(",")}` : "";
+  return `${tiers}${toolsets} (source: ${policy.source})`;
 }

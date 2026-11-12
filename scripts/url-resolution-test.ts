@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 import assert from "node:assert/strict";
-import { getApiBaseUrl } from "../src/constants.js";
+import { getApiBaseUrl } from "../src/config.js";
 
 const cases = [
   ["https://example.teamdynamix.com", "https://example.teamdynamix.com/TDWebApi/api"],

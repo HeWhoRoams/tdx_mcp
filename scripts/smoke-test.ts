@@ -16,8 +16,8 @@
  */
 
 import axios, { type AxiosInstance } from "axios";
-import { getApiBaseUrl } from "../src/constants.js";
-import { getAuthMethod, authenticate } from "./auth.js";
+import { getApiBaseUrl } from "../src/config.js";
+import { getAuthMethod, authorizationHeader } from "./auth.js";
 
 // ── Check runner ──────────────────────────────────────────────────────────────
 
@@ -102,9 +102,9 @@ async function run(): Promise<void> {
   console.log(`Auth     : ${authMethod}\n`);
 
   // ── 1. Authenticate ──────────────────────────────────────────────────────────
-  let token: string;
+  let header: string;
   try {
-    token = await authenticate(http, authMethod);
+    header = await authorizationHeader();
     console.log("✅ Authentication succeeded\n");
   } catch (err) {
     if (axios.isAxiosError(err)) {
@@ -115,13 +115,14 @@ async function run(): Promise<void> {
     process.exit(1);
   }
 
-  const authHeaders = { Authorization: `Bearer ${token}` };
+  const authHeaders = { Authorization: header };
 
   // ── 2. Discover app IDs ──────────────────────────────────────────────────────
   interface TdApp {
     AppID: number;
     Name: string;
     Type: string;
+    AppClass?: string;
     Active: boolean;
   }
 
@@ -132,9 +133,12 @@ async function run(): Promise<void> {
   try {
     const res = await http.get<TdApp[]>("/applications", { headers: authHeaders });
     const active = res.data.filter((a) => a.Active);
-    ticketingAppId = active.find((a) => a.Type === "Ticketing")?.AppID;
-    assetAppId = active.find((a) => a.Type === "Assets")?.AppID;
-    projectsAppId = active.find((a) => a.Type === "Projects")?.AppID;
+    // AppClass is the stable identifier; Type is a display label ("Asset/CI", not "Assets").
+    const byClass = (appClass: string, type: string) =>
+      active.find((a) => a.AppClass === appClass || a.Type === type)?.AppID;
+    ticketingAppId = byClass("TDTickets", "Ticketing");
+    assetAppId = byClass("TDAssets", "Asset/CI");
+    projectsAppId = byClass("TDProjects", "Projects");
     console.log(
       `Apps: ticketing=${ticketingAppId ?? "none"}, assets=${assetAppId ?? "none"}, projects=${projectsAppId ?? "none"}\n`
     );

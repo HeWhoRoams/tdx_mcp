@@ -59,7 +59,7 @@ describe("resolveAppId", () => {
 
   it("explains what to do when neither is available", () => {
     setEnv();
-    expect(() => resolveAppId(undefined)).toThrow(/teamdynamix_list_applications/);
+    expect(() => resolveAppId(undefined)).toThrow(/tdx_list_applications/);
   });
 });
 

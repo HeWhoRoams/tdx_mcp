@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { resetConfig } from "../src/config.js";
 import { READ, EDIT } from "../src/framework/annotations.js";
-import { defineTool, registerTools, ToolInputError, type AnyToolDefinition } from "../src/framework/defineTool.js";
+import { defineTool, ToolInputError, type AnyToolDefinition } from "../src/framework/defineTool.js";
 import { ResponseFormat } from "../src/types.js";
+import { mountTools } from "./helpers/mountTools.js";
 
 type Handler = (args: Record<string, unknown>) => Promise<{
   content: Array<{ type: string; text: string }>;
@@ -22,7 +23,7 @@ function fakeServer(captured: Captured[]) {
     registerTool(name: string, config: Captured["config"], handler: Handler) {
       captured.push({ name, config, handler });
     },
-  } as unknown as Parameters<typeof registerTools>[0];
+  };
 }
 
 const Input = z.object({ value: z.string(), response_format: z.nativeEnum(ResponseFormat).default(ResponseFormat.MARKDOWN) });
@@ -88,7 +89,7 @@ function setEnv(readOnly: boolean): void {
 function register(readOnly = false): Captured[] {
   setEnv(readOnly);
   const captured: Captured[] = [];
-  registerTools(fakeServer(captured), ALL);
+  mountTools(fakeServer(captured), ALL);
   return captured;
 }
 
@@ -98,7 +99,7 @@ function tool(captured: Captured[], name: string): Captured {
   return found;
 }
 
-describe("registerTools", () => {
+describe("mounting tools", () => {
   beforeEach(() => setEnv(false));
 
   it("registers every tool with its annotations and description", () => {
@@ -133,12 +134,78 @@ describe("response format policy", () => {
     expect(result.structuredContent).toBeUndefined();
   });
 
-  it("returns structured content plus a short pointer for json", async () => {
+  it("returns the payload as JSON text and as structured content for json", async () => {
     const captured = register();
     const result = await tool(captured, "read_thing").handler({ value: "x", response_format: ResponseFormat.JSON });
-    expect(result.structuredContent).toEqual({ items: [{ id: 1, value: "x" }], total: 3 });
-    expect(result.content[0].text).toBe("Structured JSON result: 1 of 3 item(s) in structuredContent.");
-    expect(result.content[0].text).not.toContain("\"id\"");
+    const payload = { items: [{ id: 1, value: "x" }], total: 3 };
+    // Some clients never show structuredContent to the model, so the text block must carry the data.
+    expect(JSON.parse(result.content[0].text)).toEqual(payload);
+    expect(result.structuredContent).toEqual(payload);
+  });
+
+  it("omits structured content when TDX_STRUCTURED_CONTENT=text", async () => {
+    process.env.TDX_STRUCTURED_CONTENT = "text";
+    resetConfig();
+    try {
+      const captured = register();
+      const result = await tool(captured, "read_thing").handler({ value: "x", response_format: ResponseFormat.JSON });
+      expect(JSON.parse(result.content[0].text).total).toBe(3);
+      expect(result.structuredContent).toBeUndefined();
+    } finally {
+      delete process.env.TDX_STRUCTURED_CONTENT;
+      resetConfig();
+    }
+  });
+
+  it("keeps a large json list under the size limit and says where to continue", async () => {
+    const big = defineTool({
+      name: "big_list",
+      title: "Big List",
+      description: "Returns many rows.",
+      input: Input,
+      annotations: READ,
+      handler: async () => ({
+        total: 500,
+        count: 500,
+        offset: 0,
+        has_more: false,
+        items: Array.from({ length: 500 }, (_, id) => ({ id, text: "t".repeat(200) })),
+      }),
+      render: () => "unused",
+    });
+    const captured: Captured[] = [];
+    mountTools(fakeServer(captured), [big]);
+    const result = await tool(captured, "big_list").handler({ value: "x", response_format: ResponseFormat.JSON });
+    expect(result.content[0].text.length).toBeLessThanOrEqual(25_000);
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.has_more).toBe(true);
+    expect(parsed.next_offset).toBe(parsed.items.length);
+    expect((result.structuredContent as { items: unknown[] }).items).toHaveLength(parsed.items.length);
+  });
+
+  it("cuts a long markdown list at a record boundary and says where to continue", async () => {
+    const big = defineTool({
+      name: "big_markdown",
+      title: "Big Markdown",
+      description: "Renders many records.",
+      input: Input,
+      annotations: READ,
+      handler: async () => ({ items: Array.from({ length: 400 }, (_, id) => id) }),
+      render: (data) => ({
+        header: ["# Many", ""],
+        blocks: data.items.map((id) => `- record ${id} ${"m".repeat(150)}`),
+        separator: "\n",
+        offset: 0,
+      }),
+    });
+    const captured: Captured[] = [];
+    mountTools(fakeServer(captured), [big]);
+    const result = await tool(captured, "big_markdown").handler({ value: "x" });
+    const text = result.content[0].text;
+    expect(text.length).toBeLessThanOrEqual(25_000);
+    const shown = (text.match(/- record \d+ m+/g) ?? []).length;
+    expect(text).toContain(`Showing ${shown} of 400`);
+    expect(text).toContain(`offset=${shown}`);
   });
 
   it("defaults to markdown when no format is supplied", async () => {
@@ -161,5 +228,24 @@ describe("error handling", () => {
     const result = await tool(captured, "failing_thing").handler({ value: "x" });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toBe("Error: At least one field is required.");
+  });
+});
+
+describe("requestContextOf", () => {
+  it("offers progress only when the caller supplied a token", async () => {
+    const { requestContextOf } = await import("../src/framework/defineTool.js");
+    const send = vi.fn(async () => undefined);
+    expect(requestContextOf({ sendNotification: send }).progress).toBeUndefined();
+    const context = requestContextOf({ _meta: { progressToken: "t1" }, sendNotification: send });
+    context.progress?.("Waiting");
+    context.progress?.("Still waiting");
+    expect(send).toHaveBeenNthCalledWith(1, { method: "notifications/progress", params: { progressToken: "t1", progress: 1, message: "Waiting" } });
+    expect(send.mock.calls[1]?.[0].params.progress).toBe(2);
+  });
+
+  it("passes the abort signal through", async () => {
+    const { requestContextOf } = await import("../src/framework/defineTool.js");
+    const controller = new AbortController();
+    expect(requestContextOf({ signal: controller.signal }).signal).toBe(controller.signal);
   });
 });

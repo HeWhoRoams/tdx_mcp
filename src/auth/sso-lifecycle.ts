@@ -1,3 +1,4 @@
+import type { UnauthorizedVerdict } from "./authorization.js";
 import type { TokenSource } from "./sso-types.js";
 import { createHash } from "node:crypto";
 import { RealmLock } from "./realm-lock.js";
@@ -19,7 +20,7 @@ import {
   type CredentialStatus,
 } from "./credential-state.js";
 import { getTdxHome, type SsoConfig } from "../config.js";
-import { SsoTokenStore, type StoredToken } from "../services/token-store.js";
+import { SsoTokenStore, type StoredToken } from "./token-store.js";
 
 export interface SsoStatus {
   realm: string;
@@ -51,11 +52,12 @@ export interface SignOutResult {
 }
 
 /** What TeamDynamix said about a token it just answered 401 for. */
-export type UnauthorizedVerdict = "permission-denied" | "expired" | "revoked" | "unknown";
+export type { UnauthorizedVerdict } from "./authorization.js";
 
 /**
- * What the HTTP client sees of SSO. It never receives the token itself, only a ready
- * Authorization header and a fingerprint to report a rejected request with.
+ * What the sign-in lifecycle offers the composition root, which adapts it to the client's
+ * Authorization. Nobody outside this module receives the token itself, only a ready header and a
+ * fingerprint to report a rejected request with.
  */
 export interface SsoAuthorization {
   authorize(): Promise<{ header: string; fingerprint: string }>;
@@ -283,11 +285,19 @@ export class SsoLifecycle implements SsoAuthorization {
     };
   }
 
-  async login(): Promise<StoredToken> {
+  async login(signal?: AbortSignal): Promise<StoredToken> {
+    if (signal?.aborted) throw new SsoLoginError("Sign-in was cancelled.", "transient");
     const session = await this.openSession({ interactive: true });
+    // Closing the window makes the pending token wait fail, which is how a cancelled sign-in ends.
+    const onAbort = () => void session.close();
+    signal?.addEventListener("abort", onAbort, { once: true });
     try {
       return await this.accept(await session.mintToken(), "sso");
+    } catch (error) {
+      if (signal?.aborted) throw new SsoLoginError("Sign-in was cancelled.", "transient");
+      throw error;
     } finally {
+      signal?.removeEventListener("abort", onAbort);
       await session.close();
     }
   }

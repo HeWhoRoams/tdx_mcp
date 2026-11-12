@@ -15,4 +15,10 @@ export const MAX_SEARCH_FETCH = 251;
 // is roughly one page's latency and covers several pages.
 export const PAGING_WINDOW = 101;
 
-export { getApiBaseUrl, resolveApiBaseUrl } from "./config.js";
+/**
+ * Clients prefix every tool name with the server name, and some model APIs cap the full name at 64
+ * characters, so the prefix is short. Definitions take their names from `toolName`; names mentioned
+ * in descriptions and instructions are checked against the registered tools by a test.
+ */
+export const TOOL_PREFIX = "tdx_";
+export const toolName = (base: string): string => `${TOOL_PREFIX}${base}`;

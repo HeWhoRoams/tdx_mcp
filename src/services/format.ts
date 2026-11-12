@@ -1,5 +1,8 @@
 import { getConfig } from "../config.js";
 import { CHARACTER_LIMIT } from "../constants.js";
+import type { PaginatedResult } from "../types.js";
+import { childBlocks, type RenderedBlocks } from "./budget.js";
+import { htmlToText, orElse, present } from "./text.js";
 
 const TRUNCATION_NOTE =
   `\n\n... [truncated: response exceeded ${CHARACTER_LIMIT} characters. ` +
@@ -14,17 +17,23 @@ export function toCompactJson(value: unknown): string {
   return truncate(JSON.stringify(value));
 }
 
+/** Prints a date as `2026-11-11 15:22 EST`: sortable, and says which time zone it is in. */
 export function formatDate(value: unknown): string {
   if (!value || typeof value !== "string") return "N/A";
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleString("en-US", {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    ...(getConfig().timeZone ? { timeZone: getConfig().timeZone } : {}),
     year: "numeric",
-    month: "short",
-    day: "numeric",
+    month: "2-digit",
+    day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-  });
+    hourCycle: "h23",
+    timeZoneName: "short",
+  }).formatToParts(d);
+  const part = (type: string) => parts.find((entry) => entry.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")} ${part("timeZoneName")}`;
 }
 
 export function nameWithId(name: string | undefined | null, id: string | number | undefined | null): string {
@@ -49,15 +58,15 @@ export function renderNamedList(
 /** Renders a feed (comments and history), shared by tickets, assets, CIs, and projects. */
 export function renderFeed(
   heading: string,
-  entries: Array<{ CreatedByName?: string; CreatedDate?: string; Body?: string }>
-): string {
-  const lines = [`# ${heading}`, ""];
-  for (const entry of entries) {
-    lines.push(`### ${entry.CreatedByName ?? "Unknown"} — ${formatDate(entry.CreatedDate)}`);
-    lines.push(entry.Body ?? "(no content)");
-    lines.push("");
-  }
-  return lines.join("\n");
+  entries: Array<{ CreatedByName?: string; CreatedDate?: string; Body?: string; IsPrivate?: boolean }>,
+  page: PaginatedResult<unknown>
+): RenderedBlocks {
+  const blocks = entries.map(
+    (entry) =>
+      `### ${orElse(entry.CreatedByName, "Unknown")} — ${formatDate(entry.CreatedDate)}${entry.IsPrivate ? " (private)" : ""}\n` +
+      `${present(entry.Body) ? htmlToText(String(entry.Body)) : "(no content)"}`
+  );
+  return childBlocks(heading, blocks, page, "\n\n");
 }
 
 /**

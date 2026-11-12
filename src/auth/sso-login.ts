@@ -1,7 +1,7 @@
 import { FALLBACK_TOKEN_LIFETIME_MS, type TokenSource } from "./sso-types.js";
 import axios from "axios";
-import type { StoredToken } from "../services/token-store.js";
-import type { SsoFailureKind } from "./sso-errors.js";
+import type { StoredToken } from "./token-store.js";
+import { signInAction, type SsoFailureKind } from "./sso-errors.js";
 
 /** An SSO step failed. `kind` says whether to retry (transient) or to stop and involve a person. */
 export class SsoLoginError extends Error {
@@ -60,7 +60,7 @@ export function ssoLoginRequiredMessage(apiBaseUrl: string, stored?: StoredToken
     : "no saved sign-in was found";
   return (
     `TeamDynamix sign-in required (${environmentLabel(apiBaseUrl)}): ${why}. ` +
-    "Ask the user to run `npm run login` in the tdx_mcp folder, then retry."
+    `${signInAction()}, then retry.`
   );
 }
 

@@ -14,7 +14,14 @@ export class TtlCache<T> {
   private entries = new Map<string, Entry<T>>();
   private version = 0;
 
-  constructor(private readonly maxEntries: number) {}
+  /**
+   * `keepStale` is for caches that deliberately serve expired entries while they refresh
+   * (reference data). Every other cache drops expired entries whenever something is stored.
+   */
+  constructor(
+    private readonly maxEntries: number,
+    private readonly options: { keepStale?: boolean } = {}
+  ) {}
 
   /**
    * Bumped on every invalidation. A caller that captures this before starting a
@@ -47,11 +54,19 @@ export class TtlCache<T> {
   set(key: string, value: T, ttlMs: number): void {
     if (ttlMs <= 0) return;
     if (this.entries.has(key)) this.entries.delete(key);
+    if (!this.options.keepStale) this.sweepExpired();
     this.entries.set(key, { value, expiresAtMs: Date.now() + ttlMs });
     while (this.entries.size > this.maxEntries) {
       const oldest = this.entries.keys().next();
       if (oldest.done) break;
       this.entries.delete(oldest.value);
+    }
+  }
+
+  private sweepExpired(): void {
+    const now = Date.now();
+    for (const [key, entry] of this.entries) {
+      if (entry.expiresAtMs <= now) this.entries.delete(key);
     }
   }
 
@@ -87,7 +102,7 @@ let searchCache: TtlCache<unknown> | undefined;
 let recordCache: TtlCache<unknown> | undefined;
 
 export function getReferenceCache(): TtlCache<unknown> {
-  if (!referenceCache) referenceCache = new TtlCache(getConfig().cache.maxEntries);
+  if (!referenceCache) referenceCache = new TtlCache(getConfig().cache.maxEntries, { keepStale: true });
   return referenceCache;
 }
 

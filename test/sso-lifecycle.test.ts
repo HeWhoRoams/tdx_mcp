@@ -9,7 +9,7 @@ import type { SsoBrowserSession } from "../src/auth/sso-browser.js";
 import { SsoLifecycle, type SsoProbe } from "../src/auth/sso-lifecycle.js";
 import { getConfig, resetConfig, type SsoConfig } from "../src/config.js";
 import { resetCaches } from "../src/services/cache.js";
-import { SsoTokenStore, type StoredToken } from "../src/services/token-store.js";
+import { SsoTokenStore, type StoredToken } from "../src/auth/token-store.js";
 
 let home: string;
 

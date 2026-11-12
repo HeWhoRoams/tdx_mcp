@@ -3,13 +3,14 @@ import axios from "axios";
 import { z } from "zod";
 import { resetConfig } from "../src/config.js";
 import { CREATE, READ } from "../src/framework/annotations.js";
-import { defineTool, registerTools, type AnyToolDefinition } from "../src/framework/defineTool.js";
+import { defineTool, type AnyToolDefinition } from "../src/framework/defineTool.js";
 import { getRecordCache, getSearchCache, resetCaches } from "../src/services/cache.js";
 import { getClient, resetClient } from "../src/services/client.js";
 import { ticketUrl } from "../src/services/format.js";
 import { searchPage } from "../src/services/search.js";
 import * as client from "../src/services/client.js";
 import { ResponseFormat } from "../src/types.js";
+import { mountTools } from "./helpers/mountTools.js";
 
 function setEnv(overrides: Record<string, string> = {}): void {
   process.env.TEAMDYNAMIX_BASE_URL = "https://example.teamdynamix.com";
@@ -105,8 +106,8 @@ describe("write invalidation via tool metadata", () => {
       registerTool(name: string, _config: unknown, handler: (args: Record<string, unknown>) => Promise<unknown>) {
         captured.set(name, handler);
       },
-    } as unknown as Parameters<typeof registerTools>[0];
-    registerTools(server, definitions);
+    };
+    mountTools(server, definitions);
     return captured;
   }
 

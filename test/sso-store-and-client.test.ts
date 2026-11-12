@@ -5,10 +5,11 @@ import axios, { AxiosError, AxiosHeaders } from "axios";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bindingOf } from "../src/auth/identity-binding.js";
 import { browserProfileDir, ssoTokenPath } from "../src/auth/paths.js";
+import { adaptSsoAuthorization } from "../src/auth/sso-composition.js";
 import { ConfigError, getConfig, resetConfig } from "../src/config.js";
 import { getReferenceCache, resetCaches } from "../src/services/cache.js";
 import { getClient, resetClient, TeamDynamixClient, TeamDynamixAuthError, TeamDynamixTransientAuthError, TeamDynamixPermissionError } from "../src/services/client.js";
-import { SsoTokenStore, type StoredToken } from "../src/services/token-store.js";
+import { SsoTokenStore, type StoredToken } from "../src/auth/token-store.js";
 
 const API = "https://example.teamdynamix.com/SBTDWebApi/api";
 let home: string;
@@ -205,7 +206,7 @@ describe("cache namespace", () => {
   });
 });
 
-describe("client with an injected SsoAuthorization", () => {
+describe("client with an adapted SSO handle", () => {
   it("sends only the handle's header, reports 401s by fingerprint, and never touches a token file", async () => {
     const request = vi.fn(async () => { throw unauthorized(); });
     vi.spyOn(axios, "create").mockReturnValue({ request, get: vi.fn(), post: vi.fn() } as unknown as ReturnType<typeof axios.create>);
@@ -214,7 +215,7 @@ describe("client with an injected SsoAuthorization", () => {
       reportUnauthorized: vi.fn(async () => "permission-denied" as const),
       stop: vi.fn(),
     };
-    const client = new TeamDynamixClient(sso);
+    const client = new TeamDynamixClient(adaptSsoAuthorization(sso));
     await expect(client.request("/tickets/1")).rejects.toThrow(TeamDynamixPermissionError);
     expect(request).toHaveBeenCalledWith(expect.objectContaining({ headers: { Authorization: "Bearer from-handle" } }));
     expect(sso.reportUnauthorized).toHaveBeenCalledWith("fp1");
@@ -226,27 +227,28 @@ describe("client with an injected SsoAuthorization", () => {
     vi.spyOn(axios, "create").mockReturnValue({ request: vi.fn(), get: vi.fn(), post: vi.fn() } as unknown as ReturnType<typeof axios.create>);
     const { SsoActionRequiredError, SsoUnavailableError } = await import("../src/auth/sso-errors.js");
     const make = (error: Error) =>
-      new TeamDynamixClient({ authorize: async () => { throw error; }, reportUnauthorized: vi.fn(), stop: vi.fn() } as never);
+      new TeamDynamixClient(adaptSsoAuthorization({ authorize: async () => { throw error; }, reportUnauthorized: vi.fn(), stop: vi.fn() } as never));
     await expect(make(new SsoActionRequiredError("go sign in")).request("/x")).rejects.toThrow(/^SSO_ACTION_REQUIRED: go sign in/);
     await expect(make(new SsoUnavailableError("later")).request("/x")).rejects.toThrow(/^SSO_RENEWAL_UNAVAILABLE: later/);
   });
 });
 
 describe("composition root", () => {
-  it("builds nothing for service-account methods and registers no cache namespace", async () => {
-    const { createSsoAuthorization } = await import("../src/auth/sso-composition.js");
+  it("builds a login adapter for service-account methods and registers no cache namespace", async () => {
+    const { createAuthorization } = await import("../src/auth/sso-composition.js");
+    const { ServiceAccountAuthorization } = await import("../src/auth/service-account.js");
     const { scopedCacheKey } = await import("../src/services/cache.js");
     env({ TEAMDYNAMIX_AUTH_METHOD: "admin", TEAMDYNAMIX_BEID: "b", TEAMDYNAMIX_WS_KEY: "k" });
     resetConfig();
-    expect(createSsoAuthorization(getConfig())).toBeUndefined();
+    expect(createAuthorization(getConfig())).toBeInstanceOf(ServiceAccountAuthorization);
     expect(scopedCacheKey("k")).toBe("k");
   });
 
   it("builds a handle for SSO that registers the namespace and removes it on stop", async () => {
-    const { createSsoAuthorization } = await import("../src/auth/sso-composition.js");
+    const { createAuthorization } = await import("../src/auth/sso-composition.js");
     const { scopedCacheKey } = await import("../src/services/cache.js");
     env();
-    const handle = createSsoAuthorization(getConfig());
+    const handle = createAuthorization(getConfig());
     expect(handle).toBeDefined();
     expect(scopedCacheKey("k")).toBe("sso:unverified:k"); // no verified sign-in yet
     handle!.stop();
@@ -277,7 +279,7 @@ describe("caching and retry bounds", () => {
       reportUnauthorized: vi.fn(async () => "expired" as const),
       stop: vi.fn(),
     };
-    await expect(new TeamDynamixClient(sso).request("/tickets/1")).rejects.toThrow(/^SSO_ACTION_REQUIRED: .*kept rejecting/);
+    await expect(new TeamDynamixClient(adaptSsoAuthorization(sso)).request("/tickets/1")).rejects.toThrow(/^SSO_ACTION_REQUIRED: .*kept rejecting/);
     expect(sso.authorize).toHaveBeenCalledTimes(3); // the first try plus two re-authorizations
   });
 });

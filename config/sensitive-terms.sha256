@@ -1,0 +1,9 @@
+# sensitive-terms-format: v1
+# SHA-256 hashes of organization terms that must never appear in this repository.
+# Add terms only with: npm run sensitive:add-term  (never write a term in this file or in a comment).
+# lengths: 5,15
+08b0a98a72490ac6f3df836d97ab6f620032b287b9700df5bdf0b21759d79382
+54bbf2d5568f9f20f675cfd32c13811a4b025a36a94f045e04f64d1a7d30ff4f
+70e3c22aa04371217c552730bd39d81996fd014d33956916645a4ebc408bcf54
+d185ca6d1e76a9a95b76580f87e566cb7d420dc518c8f8771336afb40136e92b
+f3dfff5909a1c4cb39c8f294c7a7db7db045d694d1a60ff7877aef0de18bbc54

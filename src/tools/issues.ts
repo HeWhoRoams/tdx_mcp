@@ -1,3 +1,4 @@
+import { toolName } from "../constants.js";
 import { z } from "zod";
 import { getConfig } from "../config.js";
 import { CREATE, EDIT, READ } from "../framework/annotations.js";
@@ -6,7 +7,8 @@ import { AppIdSchema, PagingShape, PersonRefSchema, ResponseFormatSchema, sortBy
 import { tdRequest } from "../services/client.js";
 import { resolveAppId, resolvePersonUid } from "../services/context.js";
 import { nameWithId } from "../services/format.js";
-import { pagingFooter, renderCount, resultsHeading, searchPage } from "../services/search.js";
+import { renderRecordDetail } from "../services/record.js";
+import { pageBlocks, renderCount, searchPage } from "../services/search.js";
 import type { TdIssue } from "../types.js";
 
 const ProjectIdSchema = z.number().int().positive().describe("The project ID the issue belongs to.");
@@ -55,6 +57,8 @@ const UpdateInput = z
   })
   .strict();
 
+const ISSUE_SHOWN = ["Title", "ID", "ProjectID", "StatusName", "StatusID", "PriorityName"];
+
 function renderIssue(issue: TdIssue): string {
   return [
     `## ${issue.Title} (#${issue.ID})`,
@@ -64,15 +68,15 @@ function renderIssue(issue: TdIssue): string {
   ].join("\n");
 }
 
-const ISSUES = { domain: "projects", appIdFrom: (args: { app_id?: number }) => resolveAppId(args.app_id) };
+const ISSUES = { domain: "projects", appIdFrom: (args: { app_id?: number | string }) => resolveAppId(args.app_id) };
 
 export const issueTools: AnyToolDefinition[] = [
   defineTool({
-    name: "teamdynamix_search_issues",
+    name: toolName("search_issues"),
     title: "Search TeamDynamix Issues",
     description:
       "Searches project issues (project-level issue tracking, not tickets) by project, text, or status.\n" +
-      "Returns partial records — use teamdynamix_get_issue for full detail.",
+      "Returns partial records — use tdx_get_issue for full detail.",
     input: SearchInput,
     annotations: READ,
     handler: async (args) => {
@@ -88,15 +92,12 @@ export const issueTools: AnyToolDefinition[] = [
     emptyMessage: "No issues found matching the given criteria.",
     render: (page, args) => {
       if (args.count_only) return renderCount(page, "issue");
-      const lines = resultsHeading("Issue Search Results", page, "issue");
-      for (const issue of page.items) lines.push(renderIssue(issue), "");
-      lines.push(...pagingFooter(page));
-      return lines.join("\n");
+      return pageBlocks("Issue Search Results", "issue", page, page.items.map((issue) => renderIssue(issue)));
     },
   }),
 
   defineTool({
-    name: "teamdynamix_get_issue",
+    name: toolName("get_issue"),
     title: "Get TeamDynamix Issue",
     description: "Gets one project issue in full.",
     input: GetInput,
@@ -109,11 +110,11 @@ export const issueTools: AnyToolDefinition[] = [
         cacheTier: "record",
       });
     },
-    render: (issue) => renderIssue(issue),
+    render: (issue) => renderRecordDetail(renderIssue(issue), issue, { omit: ISSUE_SHOWN }),
   }),
 
   defineTool({
-    name: "teamdynamix_create_issue",
+    name: toolName("create_issue"),
     title: "Create TeamDynamix Issue",
     description: "Creates an issue under a project. Requires project_id and title.",
     input: CreateInput,
@@ -131,7 +132,7 @@ export const issueTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_edit_issue",
+    name: toolName("edit_issue"),
     title: "Edit TeamDynamix Issue",
     description:
       "Edits a project issue's core fields, changing only the ones you supply.\n" +

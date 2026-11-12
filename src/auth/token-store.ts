@@ -1,11 +1,10 @@
-import type { TokenSource } from "../auth/sso-types.js";
+import type { TokenSource } from "./sso-types.js";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, unlinkSync, mkdirSync, renameSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { getConfig } from "../config.js";
-import { logger } from "./logger.js";
-import { resetCaches } from "./cache.js";
+import { getConfig, getTdxHome } from "../config.js";
+import { logger } from "../services/logger.js";
+import { resetCaches } from "../services/cache.js";
 
 export interface StoredToken {
   token: string;
@@ -44,7 +43,9 @@ class MemoryTokenStore implements TokenStore {
 /**
  * Persists the JWT across short-lived processes (CLI scripts, one-shot stdio
  * sessions) so each invocation does not pay a full login round trip. Opt-in via
- * TEAMDYNAMIX_TOKEN_CACHE=file because it writes a bearer token to disk.
+ * TEAMDYNAMIX_TOKEN_CACHE=file because it writes a bearer token to disk. The file
+ * lives in the per-user state folder (never a shared temp folder) and is replaced
+ * by rename, so a planted file or symlink is never written through.
  */
 class FileTokenStore implements TokenStore {
   private memory = new MemoryTokenStore();
@@ -52,13 +53,7 @@ class FileTokenStore implements TokenStore {
 
   constructor(cacheKey: string) {
     const digest = createHash("sha256").update(cacheKey).digest("hex").slice(0, 32);
-    const dir = join(tmpdir(), "tdx-mcp");
-    try {
-      mkdirSync(dir, { recursive: true, mode: 0o700 });
-    } catch {
-      // Fall through; write() reports the real failure.
-    }
-    this.path = join(dir, `token-${digest}.json`);
+    this.path = join(getTdxHome(), "tokens", `service-${digest}.json`);
   }
 
   read(): StoredToken | undefined {
@@ -77,7 +72,10 @@ class FileTokenStore implements TokenStore {
   write(token: StoredToken): void {
     this.memory.write(token);
     try {
-      writeFileSync(this.path, JSON.stringify(token), { mode: 0o600 });
+      mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
+      const tmp = `${this.path}.${process.pid}.tmp`;
+      writeFileSync(tmp, JSON.stringify(token), { mode: 0o600 });
+      renameSync(tmp, this.path);
     } catch (error) {
       logger.warn("could not persist token cache", { error: String(error) });
     }

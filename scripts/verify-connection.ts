@@ -11,8 +11,8 @@
  */
 
 import axios from "axios";
-import { getApiBaseUrl } from "../src/constants.js";
-import { getAuthMethod, authenticate } from "./auth.js";
+import { getApiBaseUrl } from "../src/config.js";
+import { getAuthMethod, authorizationHeader } from "./auth.js";
 
 async function run() {
   let baseUrl: string;
@@ -23,16 +23,20 @@ async function run() {
     process.exit(1);
   }
 
-  const method = getAuthMethod();
   const http = axios.create({ baseURL: baseUrl, timeout: 15000 });
 
   console.log(`\n🔗 TeamDynamix base URL : ${baseUrl}`);
-  console.log(`🔑 Auth method          : ${method}\n`);
+  try {
+    console.log(`🔑 Auth method          : ${getAuthMethod()}\n`);
+  } catch (err) {
+    console.error("❌", (err as Error).message);
+    process.exit(1);
+  }
 
   // ── 1. Authenticate ─────────────────────────────────────────────────────────
-  let token: string;
+  let header: string;
   try {
-    token = await authenticate(http, method);
+    header = await authorizationHeader();
     console.log("✅ Authentication succeeded");
   } catch (err) {
     if (axios.isAxiosError(err)) {
@@ -48,7 +52,7 @@ async function run() {
   try {
     const res = await http.get<Array<{ AppID: number; Name: string; Type: string; Active: boolean }>>(
       "/applications",
-      { headers: { Authorization: `Bearer ${token}` } }
+      { headers: { Authorization: header } }
     );
     const apps = res.data.filter((a) => a.Active);
     const ticketingApps = apps.filter((a) => a.Type === "Ticketing");

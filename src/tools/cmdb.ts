@@ -1,9 +1,12 @@
+import { toolName } from "../constants.js";
 import { z } from "zod";
 import { getConfig } from "../config.js";
 import { CREATE, DESTROY, EDIT, READ } from "../framework/annotations.js";
 import { defineTool, ToolInputError, type AnyToolDefinition } from "../framework/defineTool.js";
 import {
   AppIdSchema,
+  refId,
+  refIds,
   AttributesSchema,
   ChildPagingShape,
   PagingShape,
@@ -14,9 +17,11 @@ import {
 } from "../schemas/common.js";
 import { tdRequest } from "../services/client.js";
 import { resolveAppId, resolvePersonUid, resolvePersonUids } from "../services/context.js";
-import { formatDate, nameWithId, renderFeed, truncate } from "../services/format.js";
+import { childBlocks } from "../services/budget.js";
+import { renderRecordDetail } from "../services/record.js";
+import { formatDate, nameWithId, renderFeed } from "../services/format.js";
 import { combineHints, referenceHint } from "../services/hints.js";
-import { pagingFooter, renderCount, resultsHeading, searchPage } from "../services/search.js";
+import { pageBlocks, renderCount, searchPage } from "../services/search.js";
 import { paginate, type TdCi, type TdFeedEntry } from "../types.js";
 
 const CiIdSchema = z.number().int().positive().describe("The configuration item ID.");
@@ -28,9 +33,9 @@ const SearchInput = z
     app_id: AppIdSchema,
     search_text: z.string().max(200).optional().describe("Free-text search against CI name/serial/tag."),
     serial_number: z.string().optional().describe("Exact serial number to search for."),
-    type_ids: z.array(z.number().int()).optional().describe("Filter by CI type IDs (see teamdynamix_list_ci_types)."),
-    status_ids: z.array(z.number().int()).optional().describe("Filter by asset status IDs (see teamdynamix_list_asset_statuses)."),
-    owning_customer_uids: z.array(z.string()).optional().describe("Filter by owning customer. Accepts UIDs or email addresses."),
+    type_ids: refIds().optional().describe("Filter by CI type IDs (see tdx_get_asset_reference)."),
+    status_ids: refIds().optional().describe("Filter by asset status IDs (see tdx_get_asset_reference)."),
+    owning_customer_uids: z.array(z.string()).optional().describe("Filter by owning customer. Accepts UIDs, email addresses, or 'me' (the signed-in user, SSO only)."),
     owning_department_ids: z.array(z.number().int()).optional().describe("Filter by owning department/account ID."),
     location_ids: z.array(z.number().int()).optional().describe("Filter by location ID."),
     product_model_ids: z.array(z.number().int()).optional().describe("Filter by product model ID."),
@@ -46,8 +51,8 @@ const CreateInput = z
   .object({
     app_id: AppIdSchema,
     name: z.string().min(1).max(500).describe("The CI name."),
-    type_id: z.number().int().positive().describe("The CI type ID (see teamdynamix_list_ci_types)."),
-    status_id: z.number().int().positive().describe("The asset/CI status ID (see teamdynamix_list_asset_statuses)."),
+    type_id: refId().describe("The CI type ID (see tdx_get_asset_reference)."),
+    status_id: refId().describe("The asset/CI status ID (see tdx_get_asset_reference)."),
     serial_number: z.string().optional().describe("Serial number."),
     tag: z.string().optional().describe("Asset tag."),
     product_model_id: z.number().int().positive().optional().describe("Product model ID."),
@@ -64,7 +69,7 @@ const UpdateInput = z
     app_id: AppIdSchema,
     ci_id: CiIdSchema,
     name: z.string().min(1).max(500).optional().describe("New CI name."),
-    status_id: z.number().int().positive().optional().describe("New status ID."),
+    status_id: refId().optional().describe("New status ID."),
     serial_number: z.string().optional().describe("New serial number."),
     tag: z.string().optional().describe("New asset tag."),
     location_id: z.number().int().positive().optional().describe("New location ID."),
@@ -82,7 +87,7 @@ const CommentInput = z
     app_id: AppIdSchema,
     ci_id: CiIdSchema,
     comment: z.string().min(1).max(50000).describe("The comment text to add."),
-    notify_uids: z.array(z.string()).optional().describe("People to notify. Accepts UIDs or email addresses."),
+    notify_uids: z.array(z.string()).optional().describe("People to notify. Accepts UIDs, email addresses, or 'me' (the signed-in user, SSO only)."),
     response_format: ResponseFormatSchema,
   })
   .strict();
@@ -98,7 +103,7 @@ const AddRelationshipInput = z
       .number()
       .int()
       .positive()
-      .describe("The relationship type ID (see teamdynamix_list_ci_relationship_types)."),
+      .describe("The relationship type ID (see tdx_get_asset_reference)."),
     response_format: ResponseFormatSchema,
   })
   .strict();
@@ -111,7 +116,7 @@ const RemoveRelationshipInput = z
       .number()
       .int()
       .positive()
-      .describe("The relationship record ID to remove (from teamdynamix_get_ci_relationships)."),
+      .describe("The relationship record ID to remove (from tdx_get_ci_relationships)."),
     response_format: ResponseFormatSchema,
   })
   .strict();
@@ -124,6 +129,8 @@ const LinkTicketInput = z
     response_format: ResponseFormatSchema,
   })
   .strict();
+
+const CI_SHOWN = ["Name", "ID", "TypeName", "TypeID", "StatusName", "StatusID", "SerialNumber", "Tag", "ProductModelName", "LocationName", "OwningCustomerName", "OwningDepartmentName"];
 
 function renderCi(ci: TdCi): string {
   return [
@@ -138,13 +145,13 @@ function renderCi(ci: TdCi): string {
   ].join("\n");
 }
 
-function renderCiCompact(ci: TdCi): string {
+export function renderCiCompact(ci: TdCi): string {
   return `- **#${ci.ID}** ${ci.Name} — ${ci.TypeName ?? "?"}, ${ci.StatusName ?? "?"}`;
 }
 
-const CMDB = { domain: "cmdb", appIdFrom: (args: { app_id?: number }) => resolveAppId(args.app_id) };
+const CMDB = { domain: "cmdb", appIdFrom: (args: { app_id?: number | string }) => resolveAppId(args.app_id) };
 
-function ciWriteHints(args: { app_id?: number }): string | undefined {
+function ciWriteHints(args: { app_id?: number | string }): string | undefined {
   const appId = resolveAppId(args.app_id);
   return combineHints(
     referenceHint(appId, "cmdb/types", "type_id values"),
@@ -154,13 +161,19 @@ function ciWriteHints(args: { app_id?: number }): string | undefined {
 
 export const cmdbTools: AnyToolDefinition[] = [
   defineTool({
-    name: "teamdynamix_search_cis",
+    name: toolName("search_cis"),
     title: "Search TeamDynamix Configuration Items",
     description:
       "Searches CMDB configuration items by text, serial, type, status, owner, location, or model.\n" +
-      "CIs are a separate namespace from Assets and support CI-to-CI relationships; use teamdynamix_search_assets for assets.\n" +
-      "Returns partial records — use teamdynamix_get_ci for full detail.",
+      "CIs are a separate namespace from Assets and support CI-to-CI relationships; use tdx_search_assets for assets.\n" +
+      "Returns partial records — use tdx_get_ci for full detail.",
     input: SearchInput,
+    resolve: {
+      reference: {
+        type_ids: { table: "asset", kind: "ci_types" },
+        status_ids: { table: "asset", kind: "asset_statuses" },
+      },
+    },
     annotations: READ,
     handler: async (args) => {
       const body: Record<string, unknown> = {};
@@ -179,20 +192,19 @@ export const cmdbTools: AnyToolDefinition[] = [
     emptyMessage: "No configuration items found matching the given criteria.",
     render: (page, args) => {
       if (args.count_only) return renderCount(page, "configuration item");
-      const lines = resultsHeading("CI Search Results", page, "item");
-      if (args.verbosity === "compact") {
-        for (const ci of page.items) lines.push(renderCiCompact(ci));
-        lines.push("");
-      } else {
-        for (const ci of page.items) lines.push(renderCi(ci), "");
-      }
-      lines.push(...pagingFooter(page));
-      return lines.join("\n");
+      const compact = args.verbosity === "compact";
+      return pageBlocks(
+        "CI Search Results",
+        "item",
+        page,
+        page.items.map((ci) => (compact ? renderCiCompact(ci) : renderCi(ci))),
+        compact ? "\n" : "\n\n"
+      );
     },
   }),
 
   defineTool({
-    name: "teamdynamix_get_ci",
+    name: toolName("get_ci"),
     title: "Get TeamDynamix Configuration Item",
     description: "Gets one CI in full, including description and custom attributes that search results omit.",
     input: GetInput,
@@ -205,16 +217,22 @@ export const cmdbTools: AnyToolDefinition[] = [
         cacheTier: "record",
       });
     },
-    render: (ci) => renderCi(ci),
+    render: (ci) => renderRecordDetail(renderCi(ci), ci, { omit: CI_SHOWN }),
   }),
 
   defineTool({
-    name: "teamdynamix_create_ci",
+    name: toolName("create_ci"),
     title: "Create TeamDynamix Configuration Item",
     description:
       "Creates a CMDB configuration item. Requires name, type_id, and status_id.\n" +
-      "Get type_id from teamdynamix_list_ci_types and status_id from teamdynamix_list_asset_statuses first.",
+      "Get type_id and status_id from tdx_get_asset_reference first.",
     input: CreateInput,
+    resolve: {
+      reference: {
+        type_id: { table: "asset", kind: "ci_types" },
+        status_id: { table: "asset", kind: "asset_statuses" },
+      },
+    },
     annotations: CREATE,
     invalidates: CMDB,
     errorHints: ciWriteHints,
@@ -233,12 +251,17 @@ export const cmdbTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_edit_ci",
+    name: toolName("edit_ci"),
     title: "Edit TeamDynamix Configuration Item",
     description:
       "Edits a CI's core fields, changing only the ones you supply.\n" +
       "Uses read-modify-write because TeamDynamix has no PATCH here, so concurrent edits can overwrite each other.",
     input: UpdateInput,
+    resolve: {
+      reference: {
+        status_id: { table: "asset", kind: "asset_statuses" },
+      },
+    },
     annotations: EDIT,
     readModifyWrite: true,
     invalidates: CMDB,
@@ -266,7 +289,7 @@ export const cmdbTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_get_ci_feed",
+    name: toolName("get_ci_feed"),
     title: "Get TeamDynamix CI Feed",
     description: "Gets a CI's feed entries (comments, updates, history), newest first.\nPage with limit/offset.",
     input: FeedInput,
@@ -282,14 +305,11 @@ export const cmdbTools: AnyToolDefinition[] = [
     },
     isEmpty: (page) => page.items.length === 0,
     emptyMessage: "No feed entries found for this CI.",
-    render: (page, args) => {
-      const body = renderFeed(`Feed for CI #${args.ci_id} (${page.count} of ${page.total})`, page.items);
-      return page.has_more ? `${body}\n_More entries available. Use offset=${page.next_offset}._` : body;
-    },
+    render: (page, args) => renderFeed(`Feed for CI #${args.ci_id} (${page.count} of ${page.total})`, page.items, page),
   }),
 
   defineTool({
-    name: "teamdynamix_add_ci_comment",
+    name: toolName("add_ci_comment"),
     title: "Add Comment to TeamDynamix CI",
     description: "Adds a comment (feed entry) to a configuration item, optionally notifying people.",
     input: CommentInput,
@@ -308,7 +328,7 @@ export const cmdbTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_get_ci_relationships",
+    name: toolName("get_ci_relationships"),
     title: "Get TeamDynamix CI Relationships",
     description:
       "Gets a CI's relationships, e.g. 'this server hosts these databases'.\nUse the returned rel ID to remove a relationship.",
@@ -326,25 +346,25 @@ export const cmdbTools: AnyToolDefinition[] = [
     isEmpty: (page) => page.items.length === 0,
     emptyMessage: "No relationships found for this CI.",
     render: (page, args) => {
-      const lines = [`# Relationships for CI #${args.ci_id} (${page.count} of ${page.total})`, ""];
-      for (const relationship of page.items) {
-        lines.push(
-          `- **${relationship.TypeName ?? relationship.TypeID ?? "Relationship"}** → ` +
+      return childBlocks(
+        `Relationships for CI #${args.ci_id} (${page.count} of ${page.total})`,
+        page.items.map(
+          (relationship) =>
+            `- **${relationship.TypeName ?? relationship.TypeID ?? "Relationship"}** → ` +
             `${relationship.RelatedConfigurationItemName ?? relationship.RelatedConfigurationItemID} ` +
             `(#${relationship.RelatedConfigurationItemID}) [rel ID: ${relationship.ID}]`
-        );
-      }
-      if (page.has_more) lines.push("", `_More relationships available. Use offset=${page.next_offset}._`);
-      return truncate(lines.join("\n"));
+        ),
+        page
+      );
     },
   }),
 
   defineTool({
-    name: "teamdynamix_add_ci_relationship",
+    name: toolName("add_ci_relationship"),
     title: "Add TeamDynamix CI Relationship",
     description:
       "Relates two configuration items, e.g. linking a server to the databases it hosts.\n" +
-      "Get relationship_type_id from teamdynamix_list_ci_relationship_types first.",
+      "Get relationship_type_id from tdx_get_asset_reference first.",
     input: AddRelationshipInput,
     annotations: { ...CREATE, idempotentHint: true },
     invalidates: CMDB,
@@ -358,10 +378,10 @@ export const cmdbTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_remove_ci_relationship",
+    name: toolName("remove_ci_relationship"),
     title: "Remove TeamDynamix CI Relationship",
     description:
-      "Removes a relationship from a CI.\nCall teamdynamix_get_ci_relationships first to find the relationship_id.",
+      "Removes a relationship from a CI.\nCall tdx_get_ci_relationships first to find the relationship_id.",
     input: RemoveRelationshipInput,
     annotations: { ...DESTROY, idempotentHint: true },
     invalidates: CMDB,
@@ -376,7 +396,7 @@ export const cmdbTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_link_ci_to_ticket",
+    name: toolName("link_ci_to_ticket"),
     title: "Link TeamDynamix CI to Ticket",
     description: "Associates a configuration item with a ticket, recording that the CI is involved in that ticket.",
     input: LinkTicketInput,

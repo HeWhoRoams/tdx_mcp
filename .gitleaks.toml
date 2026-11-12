@@ -1,0 +1,16 @@
+title = "tdx_mcp gitleaks configuration"
+
+# Start from gitleaks' maintained default rules (cloud keys, private keys, provider tokens,
+# generic high-entropy secrets). Project-specific rules live in scripts/check-sensitive.mjs.
+[extend]
+useDefault = true
+
+# Test fixtures contain JWT-shaped strings with short placeholder signatures ("sig", "signature").
+# A real token carries a 43+ character signature and still matches the default rule, because the
+# pattern below only excuses tokens whose signature is empty or at most nine characters.
+# Keep this narrow: never allowlist whole paths.
+[allowlist]
+description = "synthetic JWT test fixtures with placeholder signatures"
+regexes = [
+  '''^eyJ[\w-]+\.eyJ[\w-]+(?:\.[\w-]{0,9})?$''',
+]

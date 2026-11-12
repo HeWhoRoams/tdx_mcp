@@ -10,8 +10,8 @@
  */
 
 import axios from "axios";
-import { getApiBaseUrl } from "../src/constants.js";
-import { getAuthMethod, authenticate } from "./auth.js";
+import { getApiBaseUrl } from "../src/config.js";
+import { authorizationHeader } from "./auth.js";
 
 interface TdApp {
   AppID: number;
@@ -34,8 +34,7 @@ interface TdTicket {
 async function run() {
   const baseUrl = getApiBaseUrl();
   const http = axios.create({ baseURL: baseUrl, timeout: 30000 });
-  const token = await authenticate(http, getAuthMethod());
-  const auth = { Authorization: `Bearer ${token}` };
+  const auth = { Authorization: await authorizationHeader() };
 
   const me = await http.get("/auth/getuser", { headers: auth });
   const uid = me.data.UID as string;
@@ -46,6 +45,7 @@ async function run() {
   console.log(`🔍 Scanning ${ticketing.length} ticketing applications for tickets you opened...\n`);
 
   let latest: { app: TdApp; ticket: TdTicket } | undefined;
+  let latestCreated = 0;
   for (const app of ticketing) {
     try {
       const res = await http.post<TdTicket[]>(`/${app.AppID}/tickets/search`, {
@@ -54,8 +54,10 @@ async function run() {
       }, { headers: auth });
       for (const t of res.data) {
         if (!t.CreatedDate) continue;
-        if (!latest || new Date(t.CreatedDate) > new Date(latest.ticket.CreatedDate)) {
+        const created = new Date(t.CreatedDate).getTime();
+        if (!latest || created > latestCreated) {
           latest = { app, ticket: t };
+          latestCreated = created;
         }
       }
     } catch (err) {

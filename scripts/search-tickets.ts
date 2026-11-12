@@ -24,9 +24,10 @@
  *   --json                    Output raw JSON instead of table
  */
 
+import { statusClassFilter } from "../src/services/status-class.js";
 import axios from "axios";
-import { getApiBaseUrl } from "../src/constants.js";
-import { getAuthMethod, authenticate } from "./auth.js";
+import { getApiBaseUrl } from "../src/config.js";
+import { authorizationHeader } from "./auth.js";
 
 function arg(flag: string): string | undefined {
   const idx = process.argv.indexOf(flag);
@@ -79,13 +80,12 @@ async function run() {
   const typeIds = csvInts(arg("--type-ids"));
   const asJson = flag("--json");
 
-  const method = getAuthMethod();
   const http = axios.create({ baseURL: baseUrl, timeout: 30000 });
 
   // Authenticate
-  let token: string;
+  let header: string;
   try {
-    token = await authenticate(http, method);
+    header = await authorizationHeader();
   } catch (err) {
     if (axios.isAxiosError(err)) {
       console.error(`❌ Authentication failed: HTTP ${err.response?.status}`, err.response?.data ?? err.message);
@@ -102,7 +102,7 @@ async function run() {
       const res = await http.post<Array<{ UID: string; FullName: string; PrimaryEmail: string }>>(
         "/people/search",
         { SearchText: requestorEmail, MaxResults: 5 },
-        { headers: { Authorization: `Bearer ${token}` } }
+        { headers: { Authorization: header } }
       );
       if (res.data.length === 0) {
         console.error(`❌ No person found matching "${requestorEmail}"`);
@@ -122,7 +122,7 @@ async function run() {
     MaxResults: Math.min(offset + limit, 1000),
     ...(searchText && { SearchText: searchText }),
     ...(requestorUids && { RequestorUids: requestorUids }),
-    ...(isOpen !== undefined && { IsOpen: isOpen }),
+    ...(isOpen !== undefined && { StatusClassIDs: statusClassFilter({ is_open: isOpen }) }),
     ...(statusIds && { StatusIDs: statusIds }),
     ...(priorityIds && { PriorityIDs: priorityIds }),
     ...(typeIds && { TypeIDs: typeIds }),
@@ -131,7 +131,7 @@ async function run() {
   let tickets: TdTicket[];
   try {
     const res = await http.post<TdTicket[]>(`/${appId}/tickets/search`, body, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: header },
     });
     tickets = res.data.slice(offset, offset + limit);
   } catch (err) {

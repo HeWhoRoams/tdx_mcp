@@ -1,26 +1,29 @@
-import { FALLBACK_TOKEN_LIFETIME_MS } from "../auth/sso-types.js";
 import axios, { AxiosError, AxiosInstance } from "axios";
 import { Agent as HttpAgent } from "node:http";
 import { Agent as HttpsAgent } from "node:https";
-import { getConfig, isServiceAuth } from "../config.js";
+import { getConfig } from "../config.js";
 import { increment, logger } from "./logger.js";
-import { RateLimiter } from "./rate-limiter.js";
-import { createServiceTokenStore, type TokenStore } from "./token-store.js";
+import {
+  RateLimitAbortError,
+  RateLimiterRegistry,
+  RESET_MARGIN_MS,
+  parseRateLimitHeaders,
+  routeTemplate,
+} from "./rate-limiter.js";
+import { currentRequestContext } from "./request-context.js";
 import { getReferenceCache, getRecordCache, scopedCacheKey, cachingAllowed } from "./cache.js";
-import { createSsoAuthorization } from "../auth/sso-composition.js";
-import type { SsoAuthorization } from "../auth/sso-lifecycle.js";
-import { SSO_ACTION_REQUIRED, SSO_RENEWAL_UNAVAILABLE, SsoUnavailableError } from "../auth/sso-errors.js";
+import { createAuthorization } from "../auth/sso-composition.js";
+import type { Authorization } from "../auth/authorization.js";
+import {
+  TeamDynamixAuthError,
+  TeamDynamixPermissionError,
+  TeamDynamixPolicyError,
+  TeamDynamixRateLimitWaitError,
+  TeamDynamixTransientAuthError,
+} from "./errors.js";
 
-export class TeamDynamixAuthError extends Error {}
-
-/** Signed in as the user, but TeamDynamix says this user may not do that. */
-export class TeamDynamixPermissionError extends Error {}
-
-/** Signed in, but TeamDynamix could not confirm the sign-in right now (timeout, 429, 5xx). Nothing was discarded. */
-export class TeamDynamixTransientAuthError extends Error {}
-
-/** A request that the tool policy forbids reached the transport anyway. */
-export class TeamDynamixPolicyError extends Error {}
+export { TeamDynamixAuthError, TeamDynamixPermissionError, TeamDynamixPolicyError, TeamDynamixRateLimitWaitError, TeamDynamixTransientAuthError };
+export { decodeJwtExpiryMs } from "../auth/service-account.js";
 
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
@@ -43,34 +46,6 @@ export interface RequestOptions {
   dedupe?: boolean;
 }
 
-/**
- * Decode a JWT's payload without verifying its signature (we don't have the
- * signing key -- TeamDynamix does -- we only need the "exp" claim so we know
- * when to refresh).
- */
-export function decodeJwtExpiryMs(token: string): number | undefined {
-  try {
-    const payload = token.split(".")[1];
-    if (!payload) return undefined;
-    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
-    const parsed = JSON.parse(Buffer.from(padded, "base64").toString("utf8")) as { exp?: number };
-    return typeof parsed.exp === "number" ? parsed.exp * 1000 : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function requireJwt(value: unknown): string {
-  const token = typeof value === "string" ? value.trim() : String(value);
-  if (token.split(".").length !== 3) {
-    throw new TeamDynamixAuthError(
-      "TeamDynamix authentication did not return a JWT. The API URL may be redirecting to the web login page."
-    );
-  }
-  return token;
-}
-
 /** Retry-After is either delta-seconds or an HTTP date. */
 export function parseRetryAfterMs(header: unknown): number | undefined {
   if (typeof header !== "string" || header.trim() === "") return undefined;
@@ -80,35 +55,44 @@ export function parseRetryAfterMs(header: unknown): number | undefined {
   return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
 }
 
+/** Waits `ms`, ending early with a cancellation error when the caller gives up. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new RateLimitAbortError());
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new RateLimitAbortError());
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 function backoffMs(attempt: number): number {
   const base = 500 * 2 ** attempt;
   return base + Math.random() * base * 0.25; // jitter avoids synchronized retries
 }
 
 /**
- * Wrapper around the TeamDynamix Web API: JWT auth with refresh, connection
- * reuse, proactive rate limiting, single-flight de-duplication, and retry with
- * server-directed backoff. All tools go through `tdRequest`.
+ * Wrapper around the TeamDynamix Web API: connection reuse, proactive rate limiting, caching,
+ * single-flight de-duplication, and retry with server-directed backoff. Credentials come from the
+ * injected Authorization. All tools go through `tdRequest`.
  */
-/** A request that is rejected this many times after fresh authorizations is not going to succeed. */
-const MAX_SSO_REAUTHORIZATIONS = 2;
-
 export class TeamDynamixClient {
   private readonly http: AxiosInstance;
   private readonly httpAgent: HttpAgent;
   private readonly httpsAgent: HttpsAgent;
-  private readonly limiter: RateLimiter;
-  private readonly tokens: TokenStore;
-  private loginInFlight: Promise<string> | undefined;
+  private readonly limiter: RateLimiterRegistry;
   private readonly inFlight = new Map<string, Promise<unknown>>();
 
-  /** `sso` is supplied by the composition root for per-user sign-in; absent for service accounts. */
-  constructor(private readonly sso?: SsoAuthorization) {
+  constructor(private readonly auth: Authorization) {
     const config = getConfig();
     this.httpAgent = new HttpAgent({ keepAlive: true, maxSockets: config.http.maxSockets, keepAliveMsecs: 30_000 });
     this.httpsAgent = new HttpsAgent({ keepAlive: true, maxSockets: config.http.maxSockets, keepAliveMsecs: 30_000 });
-    this.limiter = new RateLimiter(config.http.rateLimit, config.http.rateWindowMs);
-    this.tokens = createServiceTokenStore();
+    this.limiter = new RateLimiterRegistry(config.http.rateLimit, config.http.rateWindowMs, config.http.globalRateLimit);
     this.http = axios.create({
       baseURL: config.apiBaseUrl,
       timeout: config.http.timeoutMs,
@@ -118,67 +102,6 @@ export class TeamDynamixClient {
     });
   }
 
-  private async login(): Promise<string> {
-    const config = getConfig();
-    if (!isServiceAuth(config.auth)) {
-      // SSO needs a human at a browser. The server never starts one on its own.
-      throw new TeamDynamixAuthError(`${SSO_ACTION_REQUIRED}: sign in with \`npm run login\`, then retry.`);
-    }
-    const started = Date.now();
-    try {
-      // The login endpoints return the raw JWT as text/plain; axios hands it back as response.data.
-      const response =
-        config.auth.method === "admin"
-          ? await this.http.post<string>(
-              "/auth/loginadmin",
-              { BEID: config.auth.beid, WebServicesKey: config.auth.wsKey },
-              { maxRedirects: 0 }
-            )
-          : await this.http.post<string>(
-              "/auth/login",
-              { username: config.auth.username, password: config.auth.password },
-              { maxRedirects: 0 }
-            );
-      const token = requireJwt(response.data);
-      const expiresAtMs = decodeJwtExpiryMs(token) ?? Date.now() + FALLBACK_TOKEN_LIFETIME_MS;
-      this.tokens.write({ token, expiresAtMs });
-      logger.info("authenticated with TeamDynamix", { method: config.auth.method, durationMs: Date.now() - started });
-      return token;
-    } catch (error) {
-      throw new TeamDynamixAuthError(
-        `Failed to authenticate with TeamDynamix using ${config.auth.method} credentials: ${
-          error instanceof AxiosError ? error.response?.data ?? error.message : String(error)
-        }`
-      );
-    }
-  }
-
-  private async getAuthorization(): Promise<{ header: string; fingerprint?: string }> {
-    if (this.sso) {
-      try {
-        return await this.sso.authorize();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "";
-        throw new TeamDynamixAuthError(
-          `${error instanceof SsoUnavailableError ? SSO_RENEWAL_UNAVAILABLE : SSO_ACTION_REQUIRED}: ${message}`.trim()
-        );
-      }
-    }
-    return { header: `Bearer ${await this.getToken()}` };
-  }
-
-  private async getToken(): Promise<string> {
-    const bufferMs = 60_000; // refresh a minute before expiry
-    const cached = this.tokens.read();
-    if (cached && cached.expiresAtMs - bufferMs > Date.now()) return cached.token;
-    if (!this.loginInFlight) {
-      this.loginInFlight = this.login().finally(() => {
-        this.loginInFlight = undefined;
-      });
-    }
-    return this.loginInFlight;
-  }
-
   /**
    * Fetches the JWT, the application list, and the default application's ticket
    * reference data ahead of the first tool call, so the user never waits on
@@ -186,7 +109,7 @@ export class TeamDynamixClient {
    */
   async warmUp(): Promise<void> {
     try {
-      await this.getAuthorization();
+      await this.auth.authorize();
     } catch (error) {
       logger.warn("token warm-up failed; will retry on first request", { error: String(error) });
       return;
@@ -225,6 +148,13 @@ export class TeamDynamixClient {
       );
     }
 
+    // Coalesce identical concurrent reads into a single upstream call. Writes
+    // must never be coalesced, so callers opt in explicitly.
+    const dedupKey =
+      (dedupe ?? method === "GET")
+        ? `${method} ${path} ${JSON.stringify(data ?? params ?? null)}`
+        : undefined;
+
     if (caching) {
       const entry = cache.getAllowStale(scopedKey!);
       if (entry && !entry.stale) {
@@ -237,23 +167,22 @@ export class TeamDynamixClient {
       if (entry && cacheTier === "reference") {
         increment("staleServed");
         logger.debug("stale cache hit, refreshing", { endpoint: path });
+        if (dedupKey && this.inFlight.has(dedupKey)) return entry.value as T;
         const generation = cache.generation;
-        void this.execute<T>(path, method, data, params)
-          .then((fresh) => {
-            if (cache.generation === generation) cache.set(scopedKey!, fresh, cacheTtlMs);
-          })
-          .catch((error) => logger.debug("background refresh failed", { endpoint: path, error: String(error) }));
+        const refresh = this.execute<T>(path, method, data, params).then((fresh) => {
+          if (cache.generation === generation) cache.set(scopedKey!, fresh, cacheTtlMs);
+          return fresh;
+        });
+        if (dedupKey) {
+          this.inFlight.set(dedupKey, refresh);
+          void refresh.catch(() => undefined).finally(() => this.inFlight.delete(dedupKey));
+        }
+        refresh.catch((error) => logger.debug("background refresh failed", { endpoint: path, error: String(error) }));
         return entry.value as T;
       }
       increment("cacheMisses");
     }
 
-    // Coalesce identical concurrent reads into a single upstream call. Writes
-    // must never be coalesced, so callers opt in explicitly.
-    const dedupKey =
-      (dedupe ?? method === "GET")
-        ? `${method} ${path} ${JSON.stringify(data ?? params ?? null)}`
-        : undefined;
     if (dedupKey) {
       const existing = this.inFlight.get(dedupKey);
       if (existing) {
@@ -284,17 +213,28 @@ export class TeamDynamixClient {
     data: unknown,
     params: Record<string, unknown> | undefined
   ): Promise<T> {
-    const { maxRetries, maxRateLimitWaits, maxRetryDelayMs } = getConfig().http;
+    const { maxRetries, maxRateLimitWaits, maxRetryDelayMs, maxQueueWaitMs } = getConfig().http;
     const started = Date.now();
-    let refreshedToken = false;
-    let ssoReauthorizations = 0;
+    const route = routeTemplate(method, path);
+    const { signal, progress } = currentRequestContext();
+    // A write that has been sent cannot be recalled: aborting it would leave the outcome unknown.
+    // So the signal ends a wait for a slot, and cancels a read in flight, but never a sent write.
+    const abortInFlight = method === "GET" ? signal : undefined;
+    let reauthorizations = 0;
     let retries = 0;
     let rateLimitWaits = 0;
     let attempt = 0;
 
     for (;;) {
-      await this.limiter.acquire();
-      const authorization = await this.getAuthorization();
+      const expectedWaitMs = this.limiter.estimateWaitMs(route);
+      if (expectedWaitMs > maxQueueWaitMs) {
+        throw new TeamDynamixRateLimitWaitError(
+          `TeamDynamix rate limit: about ${Math.ceil(expectedWaitMs / 1000)} s until the next slot for this operation. Nothing was sent; retry then.`
+        );
+      }
+      if (expectedWaitMs > 2_000) progress?.(`Waiting for the TeamDynamix rate limit (about ${Math.ceil(expectedWaitMs / 1000)} s)`);
+      await this.limiter.acquire(route, signal);
+      const authorization = await this.auth.authorize();
       increment("requests");
       try {
         const response = await this.http.request<T>({
@@ -303,7 +243,9 @@ export class TeamDynamixClient {
           data,
           params,
           headers: { Authorization: authorization.header },
+          ...(abortInFlight ? { signal: abortInFlight } : {}),
         });
+        this.limiter.observe(route, parseRateLimitHeaders(response.headers));
         logger.debug("teamdynamix request", {
           method,
           endpoint: path,
@@ -317,9 +259,12 @@ export class TeamDynamixClient {
         const status = error.response?.status;
         attempt += 1;
         const retryAfterMs = parseRetryAfterMs(error.response?.headers?.["retry-after"]);
+        const limitInfo = parseRateLimitHeaders(error.response?.headers);
+        if (error.response) this.limiter.observe(route, limitInfo);
+        if (signal?.aborted && error.code === "ERR_CANCELED") throw new RateLimitAbortError();
 
-        if (status === 401 && this.sso && authorization.fingerprint) {
-          const verdict = await this.sso.reportUnauthorized(authorization.fingerprint);
+        if (status === 401) {
+          const verdict = await this.auth.reportUnauthorized(authorization.fingerprint);
           if (verdict === "permission-denied") {
             throw new TeamDynamixPermissionError(
               `TeamDynamix denied ${method} ${path}. You are signed in as yourself, so your own TeamDynamix role or application access does not allow this.`
@@ -330,22 +275,13 @@ export class TeamDynamixClient {
               "TeamDynamix could not confirm your sign-in just now (it did not answer cleanly). Your saved sign-in was kept; retry shortly."
             );
           }
-          // "expired" or "revoked": the lifecycle has already updated its state, so
-          // the next authorization renews, or reports that a new sign-in is required.
-          ssoReauthorizations += 1;
-          if (ssoReauthorizations > MAX_SSO_REAUTHORIZATIONS) {
-            throw new TeamDynamixAuthError(
-              `${SSO_ACTION_REQUIRED}: TeamDynamix kept rejecting the renewed sign-in. Run \`npm run login\`, then retry.`
-            );
+          // "expired" or "revoked": the adapter has already discarded or updated its state, so the
+          // next authorization renews, or reports that a new sign-in is required.
+          reauthorizations += 1;
+          if (reauthorizations > this.auth.maxReauthorizations) {
+            logger.error("teamdynamix request failed", { method, endpoint: path, status, durationMs: Date.now() - started });
+            throw this.auth.exhausted(error);
           }
-          increment("retries");
-          continue;
-        }
-
-        if (status === 401 && !refreshedToken) {
-          // Token invalidated server-side: force a refresh and retry once.
-          refreshedToken = true;
-          this.tokens.clear();
           increment("retries");
           continue;
         }
@@ -355,8 +291,12 @@ export class TeamDynamixClient {
         // IP, so another process can consume it even when this one is behaving.
         if (status === 429 && rateLimitWaits < maxRateLimitWaits) {
           rateLimitWaits += 1;
-          const delayMs = Math.min(retryAfterMs ?? backoffMs(rateLimitWaits), maxRetryDelayMs);
-          this.limiter.penalize(delayMs);
+          // The reset time is the most precise answer; the margin keeps a clock difference from
+          // sending the retry back into the same window.
+          const untilReset = limitInfo.resetAtMs !== undefined ? Math.max(0, limitInfo.resetAtMs - Date.now()) + RESET_MARGIN_MS : undefined;
+          const delayMs = Math.min(untilReset ?? retryAfterMs ?? backoffMs(rateLimitWaits), maxRetryDelayMs);
+          this.limiter.penalize(route, delayMs);
+          progress?.(`TeamDynamix rate limit reached; retrying in about ${Math.ceil(delayMs / 1000)} s`);
           increment("retries");
           logger.warn("rate limited by TeamDynamix; waiting before retry", {
             endpoint: path,
@@ -364,7 +304,7 @@ export class TeamDynamixClient {
             wait: rateLimitWaits,
             hint: "the quota is per IP, so other processes or integrations may be sharing it",
           });
-          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          await sleep(delayMs, signal);
           continue;
         }
 
@@ -388,9 +328,14 @@ export class TeamDynamixClient {
     }
   }
 
+  /** Per-route rate-limit state for health checks. Route templates only. */
+  rateLimits(): ReturnType<RateLimiterRegistry["snapshot"]> {
+    return this.limiter.snapshot();
+  }
+
   /** Releases sockets so short-lived processes exit promptly. */
   destroy(): void {
-    this.sso?.stop();
+    this.auth.stop();
     this.httpAgent.destroy();
     this.httpsAgent.destroy();
   }
@@ -399,7 +344,7 @@ export class TeamDynamixClient {
 let clientInstance: TeamDynamixClient | undefined;
 
 export function getClient(): TeamDynamixClient {
-  if (!clientInstance) clientInstance = new TeamDynamixClient(createSsoAuthorization(getConfig()));
+  if (!clientInstance) clientInstance = new TeamDynamixClient(createAuthorization(getConfig()));
   return clientInstance;
 }
 
@@ -421,7 +366,9 @@ export function handleApiError(error: unknown): string {
   }
   if (error instanceof TeamDynamixPolicyError ||
     error instanceof TeamDynamixPermissionError ||
-    error instanceof TeamDynamixTransientAuthError
+    error instanceof TeamDynamixTransientAuthError ||
+    error instanceof TeamDynamixRateLimitWaitError ||
+    error instanceof RateLimitAbortError
   ) {
     return `Error: ${error.message}`;
   }

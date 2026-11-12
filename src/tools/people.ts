@@ -1,3 +1,4 @@
+import { toolName } from "../constants.js";
 import { z } from "zod";
 import { getConfig } from "../config.js";
 import { DESTROY, EDIT, READ } from "../framework/annotations.js";
@@ -5,8 +6,10 @@ import { defineTool, items, type AnyToolDefinition } from "../framework/defineTo
 import { ChildPagingShape, PagingShape, ResponseFormatSchema, sortBySchema } from "../schemas/common.js";
 import { tdRequest } from "../services/client.js";
 import { resolvePersonUids } from "../services/context.js";
+import { childBlocks } from "../services/budget.js";
+import { renderRecordDetail } from "../services/record.js";
 import { truncate } from "../services/format.js";
-import { pagingFooter, renderCount, resultsHeading, searchPage } from "../services/search.js";
+import { pageBlocks, renderCount, searchPage } from "../services/search.js";
 import { paginate, type TdGroup, type TdPerson } from "../types.js";
 
 const GroupIdSchema = z.number().int().positive().describe("The group ID.");
@@ -58,7 +61,7 @@ const GetPersonUidInput = z
 const ManageMembersInput = z
   .object({
     group_id: GroupIdSchema,
-    uids: z.array(z.string().min(1)).min(1).describe("People to add or remove. Accepts UIDs or email addresses."),
+    uids: z.array(z.string().min(1)).min(1).describe("People to add or remove. Accepts UIDs, email addresses, or 'me' (the signed-in user, SSO only)."),
     response_format: ResponseFormatSchema,
   })
   .strict();
@@ -75,7 +78,7 @@ const GROUPS = { domain: "groups" };
 
 export const peopleTools: AnyToolDefinition[] = [
   defineTool({
-    name: "teamdynamix_lookup_people",
+    name: toolName("lookup_people"),
     title: "Lookup TeamDynamix People",
     description:
       "Fast name/email/username lookup returning minimal fields.\n" +
@@ -100,11 +103,11 @@ export const peopleTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_search_people",
+    name: toolName("search_people"),
     title: "Search TeamDynamix People",
     description:
       "Searches people with structured filters (active, employee, account).\n" +
-      "Returns more fields than teamdynamix_lookup_people; use teamdynamix_get_person for the full profile.",
+      "Returns more fields than tdx_lookup_people; use tdx_get_person for the full profile.",
     input: SearchPeopleInput,
     annotations: READ,
     handler: async (args) => {
@@ -119,33 +122,30 @@ export const peopleTools: AnyToolDefinition[] = [
     emptyMessage: "No people found matching the given criteria.",
     render: (page, args) => {
       if (args.count_only) return renderCount(page, "person");
-      const lines = resultsHeading("People Search Results", page, "person");
-      for (const person of page.items) lines.push(renderPerson(person), "");
-      lines.push(...pagingFooter(page));
-      return lines.join("\n");
+      return pageBlocks("People Search Results", "person", page, page.items.map((person) => renderPerson(person)));
     },
   }),
 
   defineTool({
-    name: "teamdynamix_get_person",
+    name: toolName("get_person"),
     title: "Get TeamDynamix Person",
     description: "Gets one person's full profile, including custom attributes and permissions.",
     input: GetPersonInput,
     annotations: READ,
     handler: (args) =>
-      tdRequest<TdPerson>(`/people/${args.uid}`, {
-        cacheKey: `/people/${args.uid}`,
+      tdRequest<TdPerson>(`/people/${encodeURIComponent(args.uid)}`, {
+        cacheKey: `/people/${encodeURIComponent(args.uid)}`,
         cacheTtlMs: getConfig().cache.referenceTtlMs,
       }),
-    render: (person) => renderPerson(person),
+    render: (person) => renderRecordDetail(renderPerson(person), person, { omit: ["FullName", "UID", "PrimaryEmail", "IsActive"] }),
   }),
 
   defineTool({
-    name: "teamdynamix_get_person_uid",
+    name: toolName("get_person_uid"),
     title: "Get TeamDynamix Person UID by Username",
     description:
       "Resolves an exact login username to the person's UID.\n" +
-      "Use teamdynamix_lookup_people instead when you only have a display name.",
+      "Use tdx_lookup_people instead when you only have a display name.",
     input: GetPersonUidInput,
     annotations: READ,
     handler: async (args) => {
@@ -159,7 +159,7 @@ export const peopleTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_search_groups",
+    name: toolName("search_groups"),
     title: "Search TeamDynamix Groups",
     description: "Searches groups by name and active state.",
     input: SearchGroupsInput,
@@ -174,17 +174,18 @@ export const peopleTools: AnyToolDefinition[] = [
     emptyMessage: "No groups found matching the given criteria.",
     render: (page, args) => {
       if (args.count_only) return renderCount(page, "group");
-      const lines = resultsHeading("Group Search Results", page, "group");
-      for (const group of page.items) {
-        lines.push(`- **${group.Name}** (#${group.ID})${group.Description ? ` — ${group.Description}` : ""}`);
-      }
-      lines.push("", ...pagingFooter(page));
-      return lines.join("\n");
+      return pageBlocks(
+        "Group Search Results",
+        "group",
+        page,
+        page.items.map((group) => `- **${group.Name}** (#${group.ID})${group.Description ? ` — ${group.Description}` : ""}`),
+        "\n"
+      );
     },
   }),
 
   defineTool({
-    name: "teamdynamix_get_group",
+    name: toolName("get_group"),
     title: "Get TeamDynamix Group",
     description: "Gets one group's details.",
     input: GetGroupInput,
@@ -195,11 +196,15 @@ export const peopleTools: AnyToolDefinition[] = [
         cacheTtlMs: getConfig().cache.referenceTtlMs,
       }),
     render: (group) =>
-      `## ${group.Name} (#${group.ID})\n- **Description**: ${group.Description ?? "N/A"}\n- **Active**: ${group.IsActive ? "Yes" : "No"}`,
+      renderRecordDetail(
+        `## ${group.Name} (#${group.ID})\n- **Active**: ${group.IsActive ? "Yes" : "No"}`,
+        group,
+        { omit: ["Name", "ID", "IsActive"] }
+      ),
   }),
 
   defineTool({
-    name: "teamdynamix_get_group_members",
+    name: toolName("get_group_members"),
     title: "Get TeamDynamix Group Members",
     description: "Lists the people belonging to a group.\nPage large groups with limit/offset.",
     input: GroupMembersInput,
@@ -216,17 +221,18 @@ export const peopleTools: AnyToolDefinition[] = [
     isEmpty: (page) => page.items.length === 0,
     emptyMessage: "This group has no members.",
     render: (page, args) => {
-      const lines = [`# Members of Group #${args.group_id} (${page.count} of ${page.total})`, ""];
-      for (const member of page.items) lines.push(`- ${member.FullName ?? member.UID} (${member.UID})`);
-      if (page.has_more) lines.push("", `_More members available. Use offset=${page.next_offset}._`);
-      return truncate(lines.join("\n"));
+      return childBlocks(
+        `Members of Group #${args.group_id} (${page.count} of ${page.total})`,
+        page.items.map((member) => `- ${member.FullName ?? member.UID} (${member.UID})`),
+        page
+      );
     },
   }),
 
   defineTool({
-    name: "teamdynamix_add_group_members",
+    name: toolName("add_group_members"),
     title: "Add Members to TeamDynamix Group",
-    description: "Adds one or more people to a group.\nAccepts UIDs or email addresses.",
+    description: "Adds one or more people to a group.\nAccepts UIDs, email addresses, or 'me' (the signed-in user, SSO only).",
     input: ManageMembersInput,
     annotations: { ...EDIT, idempotentHint: true },
     invalidates: GROUPS,
@@ -239,9 +245,9 @@ export const peopleTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_remove_group_members",
+    name: toolName("remove_group_members"),
     title: "Remove Members from TeamDynamix Group",
-    description: "Removes one or more people from a group.\nAccepts UIDs or email addresses.",
+    description: "Removes one or more people from a group.\nAccepts UIDs, email addresses, or 'me' (the signed-in user, SSO only).",
     input: ManageMembersInput,
     annotations: { ...DESTROY, idempotentHint: true },
     invalidates: GROUPS,

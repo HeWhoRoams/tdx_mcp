@@ -1,3 +1,4 @@
+import { toolName } from "../constants.js";
 import { z } from "zod";
 import { getConfig } from "../config.js";
 import { CREATE, EDIT, READ } from "../framework/annotations.js";
@@ -6,7 +7,8 @@ import { ChildPagingShape, PagingShape, PersonRefSchema, ResponseFormatSchema, s
 import { tdRequest } from "../services/client.js";
 import { resolvePersonUid, resolvePersonUids } from "../services/context.js";
 import { formatDate, nameWithId, renderFeed } from "../services/format.js";
-import { pagingFooter, renderCount, resultsHeading, searchPage } from "../services/search.js";
+import { renderRecordDetail } from "../services/record.js";
+import { pageBlocks, renderCount, searchPage } from "../services/search.js";
 import { paginate, type TdFeedEntry, type TdProject } from "../types.js";
 
 const ProjectIdSchema = z.number().int().positive().describe("The project ID.");
@@ -21,7 +23,7 @@ const SearchInput = z
     project_manager_uids: z
       .array(z.string())
       .optional()
-      .describe("Filter by project manager. Accepts UIDs or email addresses."),
+      .describe("Filter by project manager. Accepts UIDs, email addresses, or 'me' (the signed-in user, SSO only)."),
     sort_by: sortBySchema(["name", "start", "end", "id"]),
     ...PagingShape,
   })
@@ -63,10 +65,12 @@ const CommentInput = z
   .object({
     project_id: ProjectIdSchema,
     comment: z.string().min(1).max(50000).describe("The comment text to add."),
-    notify_uids: z.array(z.string()).optional().describe("People to notify. Accepts UIDs or email addresses."),
+    notify_uids: z.array(z.string()).optional().describe("People to notify. Accepts UIDs, email addresses, or 'me' (the signed-in user, SSO only)."),
     response_format: ResponseFormatSchema,
   })
   .strict();
+
+const PROJECT_SHOWN = ["Name", "ID", "StatusName", "StatusID", "ProjectManagerName", "StartDate", "EndDate", "PercentComplete"];
 
 function renderProject(project: TdProject): string {
   return [
@@ -83,7 +87,7 @@ const PROJECTS = { domain: "projects" };
 
 export const projectTools: AnyToolDefinition[] = [
   defineTool({
-    name: "teamdynamix_search_projects",
+    name: toolName("search_projects"),
     title: "Search TeamDynamix Projects",
     description:
       "Searches projects by name, status, active state, or project manager.\nThis endpoint is organization-wide and needs no app_id.",
@@ -102,15 +106,12 @@ export const projectTools: AnyToolDefinition[] = [
     emptyMessage: "No projects found matching the given criteria.",
     render: (page, args) => {
       if (args.count_only) return renderCount(page, "project");
-      const lines = resultsHeading("Project Search Results", page, "project");
-      for (const project of page.items) lines.push(renderProject(project), "");
-      lines.push(...pagingFooter(page));
-      return lines.join("\n");
+      return pageBlocks("Project Search Results", "project", page, page.items.map((project) => renderProject(project)));
     },
   }),
 
   defineTool({
-    name: "teamdynamix_get_project",
+    name: toolName("get_project"),
     title: "Get TeamDynamix Project",
     description: "Gets one project in full, including custom attributes.",
     input: GetInput,
@@ -123,11 +124,11 @@ export const projectTools: AnyToolDefinition[] = [
         cacheTier: "record",
       });
     },
-    render: (project) => renderProject(project),
+    render: (project) => renderRecordDetail(renderProject(project), project, { omit: PROJECT_SHOWN }),
   }),
 
   defineTool({
-    name: "teamdynamix_create_project",
+    name: toolName("create_project"),
     title: "Create TeamDynamix Project",
     description: "Creates a project. Only name is required.",
     input: CreateInput,
@@ -152,7 +153,7 @@ export const projectTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_edit_project",
+    name: toolName("edit_project"),
     title: "Edit TeamDynamix Project",
     description: "Edits a project's core fields, changing only the ones you supply.\nAt least one editable field is required.",
     input: UpdateInput,
@@ -183,7 +184,7 @@ export const projectTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_get_project_feed",
+    name: toolName("get_project_feed"),
     title: "Get TeamDynamix Project Feed",
     description: "Gets a project's feed entries (comments and updates), newest first.\nPage with limit/offset.",
     input: FeedInput,
@@ -199,14 +200,11 @@ export const projectTools: AnyToolDefinition[] = [
     },
     isEmpty: (page) => page.items.length === 0,
     emptyMessage: "No feed entries found for this project.",
-    render: (page, args) => {
-      const body = renderFeed(`Feed for Project #${args.project_id} (${page.count} of ${page.total})`, page.items);
-      return page.has_more ? `${body}\n_More entries available. Use offset=${page.next_offset}._` : body;
-    },
+    render: (page, args) => renderFeed(`Feed for Project #${args.project_id} (${page.count} of ${page.total})`, page.items, page),
   }),
 
   defineTool({
-    name: "teamdynamix_add_project_comment",
+    name: toolName("add_project_comment"),
     title: "Add TeamDynamix Project Comment",
     description: "Adds a comment (feed entry) to a project, optionally notifying people.",
     input: CommentInput,

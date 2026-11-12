@@ -16,8 +16,9 @@
 
 import "dotenv/config";
 import { getConfig } from "../src/config.js";
-import { registerTools, type AnyToolDefinition } from "../src/framework/defineTool.js";
 import { getClient } from "../src/services/client.js";
+import { mountSurface } from "../src/surface/mount.js";
+import { resolveSurface } from "../src/surface/resolve.js";
 import { allTools } from "../src/tools/index.js";
 
 interface CallResult {
@@ -63,19 +64,24 @@ function collectHandlers(): void {
     registerTool(name: string, _config: unknown, handler: Handler) {
       handlers.set(name, handler);
     },
-  } as unknown as Parameters<typeof registerTools>[0];
-  registerTools(server, allTools as AnyToolDefinition[]);
+  } as unknown as Parameters<typeof mountSurface>[0];
+  // Tools only: the wrapped handlers are what is under test, and prompts need no handler capture.
+  const toolsOnly = { tools: allTools, prompts: [] };
+  const policy = getConfig().toolPolicy;
+  mountSurface(server, toolsOnly, resolveSurface(toolsOnly, policy), policy);
 }
 
 async function tierA(appId: number): Promise<void> {
   console.log("\nTier A — rejected writes (no records created)");
 
   // Hints read cache only, so the reference data has to be warm first.
-  await call("teamdynamix_list_ticket_statuses", { app_id: appId, response_format: "markdown" });
-  await call("teamdynamix_list_ticket_types", { app_id: appId, response_format: "markdown" });
-  await call("teamdynamix_list_ticket_priorities", { app_id: appId, response_format: "markdown" });
+  await call("tdx_get_ticket_reference", {
+    app_id: appId,
+    kinds: ["statuses", "types", "priorities"],
+    response_format: "markdown",
+  });
 
-  const rejected = await call("teamdynamix_create_ticket", {
+  const rejected = await call("tdx_create_ticket", {
     app_id: appId,
     title: "[MCP TEST] this create is expected to fail",
     type_id: 999999999,
@@ -90,7 +96,7 @@ async function tierA(appId: number): Promise<void> {
   check("error lists valid status_id values", /Valid status_id values/.test(body), body);
   check("error lists valid type_id values", /Valid type_id values/.test(body), body);
 
-  const missingPerson = await call("teamdynamix_search_tickets", {
+  const missingPerson = await call("tdx_search_tickets", {
     app_id: appId,
     responsible_uids: ["definitely.not.real@example.invalid"],
     limit: 1,
@@ -110,16 +116,20 @@ async function tierA(appId: number): Promise<void> {
 async function tierB(appId: number): Promise<void> {
   console.log("\nTier B — live record lifecycle (creates one permanent ticket)");
 
-  const statuses = await call("teamdynamix_list_ticket_statuses", { app_id: appId, response_format: "json" });
-  const types = await call("teamdynamix_list_ticket_types", { app_id: appId, response_format: "json" });
-  const statusList = (statuses.structuredContent?.items ?? []) as Array<{ ID: number; Name: string }>;
-  const typeList = (types.structuredContent?.items ?? []) as Array<{ ID: number; Name: string }>;
+  const reference = await call("tdx_get_ticket_reference", {
+    app_id: appId,
+    kinds: ["statuses", "types"],
+    response_format: "json",
+  });
+  const lists = (reference.structuredContent as { reference?: Record<string, Array<{ ID: number; Name: string }>> } | undefined)?.reference ?? {};
+  const statusList = lists.statuses ?? [];
+  const typeList = lists.types ?? [];
   if (typeList.length === 0 || statusList.length === 0) throw new Error("no ticket types/statuses available");
 
-  const me = await call("teamdynamix_get_current_user", { response_format: "json" });
+  const me = await call("tdx_get_current_user", { response_format: "json" });
   const requestorEmail = (me.structuredContent as { PrimaryEmail?: string } | undefined)?.PrimaryEmail;
 
-  const created = await call("teamdynamix_create_ticket", {
+  const created = await call("tdx_create_ticket", {
     app_id: appId,
     title: `[MCP TEST] write smoke test ${new Date().toISOString()}`,
     description: "Created by scripts/write-smoke-test.ts. Safe to close.",
@@ -138,11 +148,11 @@ async function tierB(appId: number): Promise<void> {
   console.log(`        ticket #${ticket.ID}`);
 
   const readArgs = { app_id: appId, ticket_id: ticket.ID, response_format: "json" };
-  const before = await call("teamdynamix_get_ticket", readArgs);
+  const before = await call("tdx_get_ticket", readArgs);
   check("created ticket is readable", before.isError !== true);
 
   const newTitle = `[MCP TEST] renamed ${Date.now()}`;
-  const updated = await call("teamdynamix_edit_ticket", {
+  const updated = await call("tdx_edit_ticket", {
     app_id: appId,
     ticket_id: ticket.ID,
     title: newTitle,
@@ -151,11 +161,11 @@ async function tierB(appId: number): Promise<void> {
   });
   check("ticket edited", updated.isError !== true, text(updated));
 
-  const after = await call("teamdynamix_get_ticket", readArgs);
+  const after = await call("tdx_get_ticket", readArgs);
   const afterTitle = (after.structuredContent as { Title?: string } | undefined)?.Title;
   check("read after write is fresh, not a cached pre-update copy", afterTitle === newTitle, `got: ${afterTitle}`);
 
-  const commented = await call("teamdynamix_add_ticket_comment", {
+  const commented = await call("tdx_add_ticket_comment", {
     app_id: appId,
     ticket_id: ticket.ID,
     comment: "Automated write smoke test comment.",
@@ -164,7 +174,7 @@ async function tierB(appId: number): Promise<void> {
   });
   check("comment added", commented.isError !== true, text(commented));
 
-  const feed = await call("teamdynamix_get_ticket_feed", {
+  const feed = await call("tdx_get_ticket_feed", {
     app_id: appId,
     ticket_id: ticket.ID,
     limit: 1,
@@ -177,8 +187,8 @@ async function tierB(appId: number): Promise<void> {
   // Concurrency: a read in flight while a write lands must not poison the cache.
   const raceTitle = `[MCP TEST] race ${Date.now()}`;
   await Promise.all([
-    call("teamdynamix_get_ticket", readArgs),
-    call("teamdynamix_edit_ticket", {
+    call("tdx_get_ticket", readArgs),
+    call("tdx_edit_ticket", {
       app_id: appId,
       ticket_id: ticket.ID,
       title: raceTitle,
@@ -186,13 +196,13 @@ async function tierB(appId: number): Promise<void> {
       response_format: "json",
     }),
   ]);
-  const afterRace = await call("teamdynamix_get_ticket", readArgs);
+  const afterRace = await call("tdx_get_ticket", readArgs);
   const racedTitle = (afterRace.structuredContent as { Title?: string } | undefined)?.Title;
   check("concurrent read+write leaves no stale cache entry", racedTitle === raceTitle, `got: ${racedTitle}`);
 
   const cancelled = statusList.find((status) => /cancel|closed/i.test(status.Name));
   if (cancelled) {
-    const closing = await call("teamdynamix_edit_ticket", {
+    const closing = await call("tdx_edit_ticket", {
       app_id: appId,
       ticket_id: ticket.ID,
       status_id: cancelled.ID,
@@ -232,8 +242,8 @@ async function run(): Promise<void> {
 
   const requiredWriteHandlers =
     tier.toLowerCase() === "b"
-      ? ["teamdynamix_create_ticket", "teamdynamix_edit_ticket", "teamdynamix_add_ticket_comment"]
-      : ["teamdynamix_create_ticket"];
+      ? ["tdx_create_ticket", "tdx_edit_ticket", "tdx_add_ticket_comment"]
+      : ["tdx_create_ticket"];
   const missingWriteHandlers = requiredWriteHandlers.filter((name) => !handlers.has(name));
   if (missingWriteHandlers.length > 0) {
     console.error(

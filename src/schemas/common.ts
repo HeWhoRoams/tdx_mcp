@@ -28,14 +28,16 @@ export const CursorSchema = z
   .describe("Opaque pagination cursor from a previous response's next_cursor. Takes precedence over 'offset'.");
 
 export const AppIdSchema = z
-  .number()
-  .int()
-  .positive()
+  .union([z.number().int().positive(), z.string().trim().min(1)])
   .optional()
   .describe(
-    "The TeamDynamix application ID this request operates in (e.g. the Ticketing app or an Assets/CIs app). " +
-      "Optional when the server has a default application configured; otherwise use teamdynamix_list_applications to discover IDs."
+    "The TeamDynamix application, by ID or by name (e.g. 5 or 'Help Desk'). " +
+      "Optional when the server has a default application configured; otherwise use tdx_list_applications to discover them."
   );
+
+/** A reference value (status, priority, type...) given by ID or by name. Names resolve before the handler runs. */
+export const refId = () => z.union([z.number().int().positive(), z.string().trim().min(1)]);
+export const refIds = () => z.array(refId());
 
 export const VerbositySchema = z
   .enum(["compact", "full"])
@@ -52,8 +54,19 @@ export const SortOrderSchema = z
   .default("desc")
   .describe("Sort direction; defaults to descending.");
 
+/** Field selection shared by every search tool. */
+export const FieldsSchema = z
+  .array(z.string().min(1))
+  .max(20)
+  .optional()
+  .describe(
+    "Return only these fields per record (plus ID), as a table, e.g. ['Title','StatusName','ResponsibleFullName']. " +
+      "Use it to keep large result sets small. Unknown names are reported with valid examples."
+  );
+
 /** Pagination + format arguments shared by every search tool. */
 export const PagingShape = {
+  fields: FieldsSchema,
   limit: LimitSchema,
   offset: OffsetSchema,
   cursor: CursorSchema,
@@ -84,5 +97,5 @@ export const AttributesSchema = z
   .optional()
   .describe(
     "Custom attribute values as { ID, Value } pairs. Discover IDs and valid choices with " +
-      "teamdynamix_list_custom_attributes (component_id=9 for tickets, 63 for assets/CIs)."
+      "tdx_list_custom_attributes (component_id=9 for tickets, 63 for assets/CIs)."
   );

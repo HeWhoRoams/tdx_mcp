@@ -1,7 +1,7 @@
 import type { RealmLock } from "./realm-lock.js";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { StoredToken, TokenStore } from "../services/token-store.js";
+import type { StoredToken, TokenStore } from "./token-store.js";
 import type { SsoFailureKind } from "./sso-errors.js";
 
 /** Why automatic renewal is blocked. "signed-out" is an explicit logout. */

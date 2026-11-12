@@ -1,3 +1,5 @@
+import { getConfig, isSsoConfig } from "../config.js";
+
 /**
  * Why an SSO operation failed. The kind decides what happens next:
  * only "transient" is retried; every other kind needs a person or a fix.
@@ -16,6 +18,23 @@ export function isRetryable(kind: SsoFailureKind): boolean {
 /** Stable codes the transport puts at the start of an error so agents can recognise them. */
 export const SSO_ACTION_REQUIRED = "SSO_ACTION_REQUIRED";
 export const SSO_RENEWAL_UNAVAILABLE = "SSO_RENEWAL_UNAVAILABLE";
+
+/**
+ * What to tell a caller who must sign in again. A local deployment offers the sign-in tool, which
+ * works from the chat; every other deployment can only point at the command. Callers append their own
+ * ending ("then retry", "before retrying").
+ */
+export function signInAction(): string {
+  try {
+    const config = getConfig();
+    if (isSsoConfig(config) && config.auth.deployment === "local") {
+      return "Call tdx_sign_in (it opens a sign-in window), or run `npm run login` in the server folder";
+    }
+  } catch {
+    // No usable configuration here: fall through to the command alone.
+  }
+  return "Run `npm run login` in the server folder";
+}
 
 /** No usable token remains and a person must run `npm run login`. */
 export class SsoActionRequiredError extends Error {}

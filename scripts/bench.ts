@@ -9,6 +9,7 @@
  *   npm run bench -- --app-id 49
  */
 
+import { statusClassFilter } from "../src/services/status-class.js";
 import "dotenv/config";
 import { getClient, resetClient, tdRequest } from "../src/services/client.js";
 import { getConfig } from "../src/config.js";
@@ -84,16 +85,16 @@ async function run(): Promise<void> {
 
   if (appId) {
     const searchArgs = { limit: 10, offset: 0 };
-    const firstPage = await time(() => searchPage(`/${appId}/tickets/search`, { IsOpen: true }, searchArgs));
-    const secondPage = await time(() => searchPage(`/${appId}/tickets/search`, { IsOpen: true }, { limit: 10, offset: 10 }));
+    const firstPage = await time(() => searchPage(`/${appId}/tickets/search`, { StatusClassIDs: statusClassFilter({ is_open: true }) }, searchArgs));
+    const secondPage = await time(() => searchPage(`/${appId}/tickets/search`, { StatusClassIDs: statusClassFilter({ is_open: true }) }, { limit: 10, offset: 10 }));
     samples.push({ label: "ticket search, first page", durations: [firstPage] });
     samples.push({ label: "ticket search, second page (cached)", durations: [secondPage] });
 
     const concurrent = await time(() =>
       Promise.all([
-        searchPage(`/${appId}/tickets/search`, { IsOpen: false }, searchArgs),
-        searchPage(`/${appId}/tickets/search`, { IsOpen: false }, searchArgs),
-        searchPage(`/${appId}/tickets/search`, { IsOpen: false }, searchArgs),
+        searchPage(`/${appId}/tickets/search`, { StatusClassIDs: statusClassFilter({ is_open: false }) }, searchArgs),
+        searchPage(`/${appId}/tickets/search`, { StatusClassIDs: statusClassFilter({ is_open: false }) }, searchArgs),
+        searchPage(`/${appId}/tickets/search`, { StatusClassIDs: statusClassFilter({ is_open: false }) }, searchArgs),
       ])
     );
     samples.push({ label: "3 identical concurrent searches (deduped)", durations: [concurrent] });

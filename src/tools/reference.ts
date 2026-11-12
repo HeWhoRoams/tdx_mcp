@@ -1,14 +1,21 @@
+import { toolName } from "../constants.js";
 import { z } from "zod";
 import { getConfig } from "../config.js";
 import { READ } from "../framework/annotations.js";
 import { defineTool, items, type AnyToolDefinition } from "../framework/defineTool.js";
+import type { AppKey } from "../policy/availability.js";
+import type { ToolDomain } from "../policy/schema.js";
 import { AppIdSchema, ResponseFormatSchema } from "../schemas/common.js";
-import { tdRequest } from "../services/client.js";
+import { handleApiError, tdRequest } from "../services/client.js";
 import { resolveAppId } from "../services/context.js";
 import { renderNamedList, truncate } from "../services/format.js";
+import { ASSET_KINDS, TICKET_KINDS, type KindSpec } from "../services/reference-kinds.js";
 import type { TdApp } from "../types.js";
 
-interface NamedRef {
+export { TICKET_KINDS };
+export type { KindSpec };
+
+export interface NamedRef {
   ID: number;
   Name: string;
   IsActive?: boolean;
@@ -23,7 +30,7 @@ const ApplicationsInput = z
     app_type: z
       .string()
       .optional()
-      .describe("Only return applications of this type, e.g. 'Ticketing', 'Assets', 'Projects'. Case-insensitive."),
+      .describe("Only return applications of this type, e.g. 'Ticketing', 'Asset/CI', 'Projects'. Case-insensitive."),
     include_inactive: z.boolean().default(false).describe("Include applications that are not active."),
     response_format: ResponseFormatSchema,
   })
@@ -39,12 +46,15 @@ function listTool<Shape extends z.ZodRawShape>(spec: {
   description: string;
   input: z.ZodObject<Shape>;
   endpoint: (args: z.infer<z.ZodObject<Shape>>) => string;
+  /** The application this lookup needs, or null for a lookup that works in any account. Required so none is forgotten. */
+  requiresApp: AppKey | null;
 }): AnyToolDefinition {
   return defineTool({
     name: spec.name,
     title: spec.title,
     description: spec.description,
     input: spec.input,
+    requiresApp: spec.requiresApp,
     annotations: READ,
     handler: async (args) => {
       const endpoint = spec.endpoint(args);
@@ -57,6 +67,101 @@ function listTool<Shape extends z.ZodRawShape>(spec: {
     isEmpty: (data) => data.items.length === 0,
     emptyMessage: "No results found.",
     render: (data) => renderNamedList(spec.title, data.items),
+  });
+}
+
+interface ReferenceData {
+  /** Requested kinds, in order. */
+  kinds: string[];
+  reference: Record<string, NamedRef[]>;
+  /** A kind that could not be loaded does not fail the others. */
+  errors: Record<string, string>;
+}
+
+/**
+ * Fetches several cached reference lists for one application. Each list is cached under its
+ * endpoint path. A list that fails is reported in `errors` without failing the others; `failure`
+ * is set only when every list failed, so callers can surface one real error.
+ */
+export async function loadReference(
+  appId: number,
+  table: Record<string, KindSpec>,
+  requested: string[]
+): Promise<ReferenceData & { failure?: unknown }> {
+  const kinds = [...new Set(requested)];
+  const settled = await Promise.allSettled(
+    kinds.map((kind) => {
+      const endpoint = `/${appId}/${table[kind]!.path}`;
+      return tdRequest<NamedRef[]>(endpoint, { cacheKey: endpoint, cacheTtlMs: getConfig().cache.referenceTtlMs });
+    })
+  );
+  const reference: Record<string, NamedRef[]> = {};
+  const errors: Record<string, string> = {};
+  let failure: unknown;
+  settled.forEach((result, index) => {
+    const kind = kinds[index]!;
+    if (result.status === "fulfilled") reference[kind] = result.value ?? [];
+    else {
+      failure ??= result.reason;
+      errors[kind] = handleApiError(result.reason);
+    }
+  });
+  const allFailed = Object.keys(errors).length === kinds.length;
+  return { kinds, reference, errors, ...(allFailed ? { failure } : {}) };
+}
+
+/**
+ * One tool over a table of cached reference lookups. Reference data changes rarely and every write
+ * path needs it first, so each list is cached for TEAMDYNAMIX_CACHE_TTL_MS under its endpoint path.
+ */
+function referenceTool(spec: {
+  name: string;
+  title: string;
+  description: string;
+  kinds: Record<string, KindSpec>;
+  defaults: string[];
+  requiresApp: AppKey;
+  serves: ToolDomain[];
+}): AnyToolDefinition {
+  const names = Object.keys(spec.kinds) as [string, ...string[]];
+  const input = z
+    .object({
+      app_id: AppIdSchema,
+      kinds: z
+        .array(z.enum(names))
+        .min(1)
+        .optional()
+        .describe(`Which lists to return. One or more of: ${names.join(", ")}. Default: ${spec.defaults.join(", ")}.`),
+      response_format: ResponseFormatSchema,
+    })
+    .strict();
+
+  return defineTool({
+    name: spec.name,
+    title: spec.title,
+    description: spec.description,
+    input,
+    requiresApp: spec.requiresApp,
+    serves: spec.serves,
+    annotations: READ,
+    handler: async (args): Promise<ReferenceData> => {
+      const { failure, ...data } = await loadReference(resolveAppId(args.app_id), spec.kinds, args.kinds ?? spec.defaults);
+      // Nothing to show: surface the failure as the tool error instead of a page of error lines.
+      if (failure !== undefined) throw failure;
+      return data;
+    },
+    isEmpty: (data) => Object.keys(data.errors).length === 0 && data.kinds.every((kind) => (data.reference[kind] ?? []).length === 0),
+    emptyMessage: "No results found.",
+    render: (data) =>
+      truncate(
+        data.kinds
+          .map((kind) => {
+            const title = spec.kinds[kind]!.title;
+            const error = data.errors[kind];
+            return error ? `# ${title}\n\n_Could not be loaded: ${error}_` : renderNamedList(title, data.reference[kind] ?? []);
+          })
+          .join("\n\n")
+      ),
   });
 }
 
@@ -79,7 +184,8 @@ interface CustomAttribute {
 
 export const referenceTools: AnyToolDefinition[] = [
   defineTool({
-    name: "teamdynamix_list_applications",
+    name: toolName("list_applications"),
+    requiresApp: null,
     title: "List TeamDynamix Applications",
     description:
       "Lists platform applications with the app_id every other tool needs, grouped by type.\n" +
@@ -126,105 +232,49 @@ export const referenceTools: AnyToolDefinition[] = [
     },
   }),
 
-  listTool({
-    name: "teamdynamix_list_ticket_types",
-    title: "List TeamDynamix Ticket Types",
+  referenceTool({
+    name: toolName("get_ticket_reference"),
+    title: "Get TeamDynamix Ticket Reference Data",
     description:
-      "Lists ticket types for a ticketing application.\nA type_id from here is required to create a ticket.",
-    input: AppScopedInput,
-    endpoint: (args) => `/${resolveAppId(args.app_id)}/tickets/types`,
+      "Returns ticket reference lists (types, statuses, priorities, sources, forms, impacts, urgencies) for a ticketing application.\n" +
+      "Call before creating or filtering tickets: type_id, status_id and priority_id values come from here.",
+    kinds: TICKET_KINDS,
+    defaults: ["types", "statuses", "priorities"],
+    requiresApp: "tickets",
+    serves: ["tickets"],
   }),
-  listTool({
-    name: "teamdynamix_list_ticket_statuses",
-    title: "List TeamDynamix Ticket Statuses",
+  referenceTool({
+    name: toolName("get_asset_reference"),
+    title: "Get TeamDynamix Asset and CI Reference Data",
     description:
-      "Lists ticket statuses for a ticketing application.\nUse for status_id values when creating, updating, or filtering tickets.",
-    input: AppScopedInput,
-    endpoint: (args) => `/${resolveAppId(args.app_id)}/tickets/statuses`,
+      "Returns asset and CMDB reference lists (asset_statuses, product_models, ci_types, ci_relationship_types) for an Asset/CI application.\n" +
+      "Call before creating assets or CIs: status_id, type_id and product_model_id values come from here.",
+    kinds: ASSET_KINDS,
+    defaults: ["asset_statuses", "ci_types"],
+    requiresApp: "assets",
+    serves: ["assets", "cmdb"],
   }),
   listTool({
-    name: "teamdynamix_list_ticket_priorities",
-    title: "List TeamDynamix Ticket Priorities",
-    description:
-      "Lists ticket priorities for a ticketing application.\nUse for priority_id values when creating, updating, or filtering tickets.",
-    input: AppScopedInput,
-    endpoint: (args) => `/${resolveAppId(args.app_id)}/tickets/priorities`,
-  }),
-  listTool({
-    name: "teamdynamix_list_ticket_sources",
-    title: "List TeamDynamix Ticket Sources",
-    description: "Lists ticket sources (Email, Phone, Web) for a ticketing application.\nUse for source_id when creating tickets.",
-    input: AppScopedInput,
-    endpoint: (args) => `/${resolveAppId(args.app_id)}/tickets/sources`,
-  }),
-  listTool({
-    name: "teamdynamix_list_ticket_forms",
-    title: "List TeamDynamix Ticket Forms",
-    description: "Lists active ticket forms for a ticketing application.",
-    input: AppScopedInput,
-    endpoint: (args) => `/${resolveAppId(args.app_id)}/tickets/forms`,
-  }),
-  listTool({
-    name: "teamdynamix_list_ticket_impacts",
-    title: "List TeamDynamix Ticket Impacts",
-    description: "Lists ticket impact values for a ticketing application.",
-    input: AppScopedInput,
-    endpoint: (args) => `/${resolveAppId(args.app_id)}/tickets/impacts`,
-  }),
-  listTool({
-    name: "teamdynamix_list_ticket_urgencies",
-    title: "List TeamDynamix Ticket Urgencies",
-    description: "Lists ticket urgency values for a ticketing application.",
-    input: AppScopedInput,
-    endpoint: (args) => `/${resolveAppId(args.app_id)}/tickets/urgencies`,
-  }),
-  listTool({
-    name: "teamdynamix_list_asset_statuses",
-    title: "List TeamDynamix Asset Statuses",
-    description: "Lists asset statuses for an Assets application.\nRequired when creating or updating assets.",
-    input: AppScopedInput,
-    endpoint: (args) => `/${resolveAppId(args.app_id)}/assets/statuses`,
-  }),
-  listTool({
-    name: "teamdynamix_list_product_models",
-    title: "List TeamDynamix Product Models",
-    description: "Lists active product models for an Assets application.\nUse for product_model_id when creating or filtering assets.",
-    input: AppScopedInput,
-    endpoint: (args) => `/${resolveAppId(args.app_id)}/assets/models`,
-  }),
-  listTool({
-    name: "teamdynamix_list_ci_types",
-    title: "List TeamDynamix CI Types",
-    description: "Lists configuration item types for an Assets/CMDB application.\nA type_id from here is required to create a CI.",
-    input: AppScopedInput,
-    endpoint: (args) => `/${resolveAppId(args.app_id)}/cmdb/types`,
-  }),
-  listTool({
-    name: "teamdynamix_list_ci_relationship_types",
-    title: "List TeamDynamix CI Relationship Types",
-    description:
-      "Lists CI relationship types for an Assets/CMDB application.\nRequired by teamdynamix_add_ci_relationship.",
-    input: AppScopedInput,
-    endpoint: (args) => `/${resolveAppId(args.app_id)}/cmdb/relationshiptypes`,
-  }),
-  listTool({
-    name: "teamdynamix_list_accounts",
+    name: toolName("list_accounts"),
     title: "List TeamDynamix Accounts/Departments",
     description:
       "Lists organization Accounts/Departments.\nUse for account_id on tickets, projects, and assets.",
     input: GlobalInput,
     endpoint: () => "/accounts",
+    requiresApp: null,
   }),
   listTool({
-    name: "teamdynamix_list_locations",
+    name: toolName("list_locations"),
     title: "List TeamDynamix Locations",
     description: "Lists active organization locations.\nUse for location_id when creating or filtering assets.",
     input: GlobalInput,
     endpoint: () => "/locations",
+    requiresApp: null,
   }),
 
   defineTool({
-    name: "teamdynamix_list_custom_attributes",
+    name: toolName("list_custom_attributes"),
+    requiresApp: null,
     title: "List TeamDynamix Custom Attributes",
     description:
       "Lists custom attribute definitions and their valid choice values for a component type.\n" +

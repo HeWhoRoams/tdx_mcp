@@ -1,0 +1,798 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`tool surface as a client sees it > allow list / all apps 1`] = `
+{
+  "count": 2,
+  "instructions": "This server's policy denies edit and destroy tools by default, so some write tools are not registered. TeamDynamix ticketing and assets. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [],
+  "tools": [
+    "tdx_get_ticket",
+    "tdx_search_assets",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > allow list / gating off 1`] = `
+{
+  "count": 2,
+  "instructions": "This server's policy denies edit and destroy tools by default, so some write tools are not registered. TeamDynamix ticketing and assets. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [],
+  "tools": [
+    "tdx_get_ticket",
+    "tdx_search_assets",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > allow list / no assets 1`] = `
+{
+  "count": 1,
+  "instructions": "This server's policy denies edit and destroy tools by default, so some write tools are not registered. Asset and CMDB tools are not registered because no Asset/CI application is available to this account. TeamDynamix ticketing. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [],
+  "tools": [
+    "tdx_get_ticket",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > allow list / no projects 1`] = `
+{
+  "count": 2,
+  "instructions": "This server's policy denies edit and destroy tools by default, so some write tools are not registered. TeamDynamix ticketing and assets. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [],
+  "tools": [
+    "tdx_get_ticket",
+    "tdx_search_assets",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > allow list / no tickets 1`] = `
+{
+  "count": 1,
+  "instructions": "This server's policy denies edit and destroy tools by default, so some write tools are not registered. Ticketing tools are not registered because no Ticketing application is available to this account. TeamDynamix assets. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [],
+  "tools": [
+    "tdx_search_assets",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > allow list / unknown 1`] = `
+{
+  "count": 2,
+  "instructions": "This server's policy denies edit and destroy tools by default, so some write tools are not registered. TeamDynamix ticketing and assets. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [],
+  "tools": [
+    "tdx_get_ticket",
+    "tdx_search_assets",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > default / all apps 1`] = `
+{
+  "count": 46,
+  "instructions": "This server's policy denies edit and destroy tools by default, so some write tools are not registered. TeamDynamix ticketing, assets, CMDB, projects, issues, people, and reports. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [
+    "triage_ticket",
+    "weekly_ticket_report",
+  ],
+  "tools": [
+    "tdx_add_asset_comment",
+    "tdx_add_ci_comment",
+    "tdx_add_ci_relationship",
+    "tdx_add_project_comment",
+    "tdx_add_ticket_comment",
+    "tdx_create_asset",
+    "tdx_create_ci",
+    "tdx_create_issue",
+    "tdx_create_project",
+    "tdx_create_ticket",
+    "tdx_create_ticket_task",
+    "tdx_get_asset",
+    "tdx_get_asset_feed",
+    "tdx_get_asset_reference",
+    "tdx_get_ci",
+    "tdx_get_ci_feed",
+    "tdx_get_ci_relationships",
+    "tdx_get_current_user",
+    "tdx_get_group",
+    "tdx_get_group_members",
+    "tdx_get_issue",
+    "tdx_get_person",
+    "tdx_get_person_uid",
+    "tdx_get_project",
+    "tdx_get_project_feed",
+    "tdx_get_report",
+    "tdx_get_ticket",
+    "tdx_get_ticket_feed",
+    "tdx_get_ticket_reference",
+    "tdx_get_ticket_tasks",
+    "tdx_link_ci_to_ticket",
+    "tdx_list_accounts",
+    "tdx_list_applications",
+    "tdx_list_custom_attributes",
+    "tdx_list_locations",
+    "tdx_list_reports",
+    "tdx_list_saved_searches",
+    "tdx_lookup_people",
+    "tdx_run_saved_search",
+    "tdx_search_assets",
+    "tdx_search_cis",
+    "tdx_search_groups",
+    "tdx_search_issues",
+    "tdx_search_people",
+    "tdx_search_projects",
+    "tdx_search_tickets",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > default / gating off 1`] = `
+{
+  "count": 46,
+  "instructions": "This server's policy denies edit and destroy tools by default, so some write tools are not registered. TeamDynamix ticketing, assets, CMDB, projects, issues, people, and reports. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [
+    "triage_ticket",
+    "weekly_ticket_report",
+  ],
+  "tools": [
+    "tdx_add_asset_comment",
+    "tdx_add_ci_comment",
+    "tdx_add_ci_relationship",
+    "tdx_add_project_comment",
+    "tdx_add_ticket_comment",
+    "tdx_create_asset",
+    "tdx_create_ci",
+    "tdx_create_issue",
+    "tdx_create_project",
+    "tdx_create_ticket",
+    "tdx_create_ticket_task",
+    "tdx_get_asset",
+    "tdx_get_asset_feed",
+    "tdx_get_asset_reference",
+    "tdx_get_ci",
+    "tdx_get_ci_feed",
+    "tdx_get_ci_relationships",
+    "tdx_get_current_user",
+    "tdx_get_group",
+    "tdx_get_group_members",
+    "tdx_get_issue",
+    "tdx_get_person",
+    "tdx_get_person_uid",
+    "tdx_get_project",
+    "tdx_get_project_feed",
+    "tdx_get_report",
+    "tdx_get_ticket",
+    "tdx_get_ticket_feed",
+    "tdx_get_ticket_reference",
+    "tdx_get_ticket_tasks",
+    "tdx_link_ci_to_ticket",
+    "tdx_list_accounts",
+    "tdx_list_applications",
+    "tdx_list_custom_attributes",
+    "tdx_list_locations",
+    "tdx_list_reports",
+    "tdx_list_saved_searches",
+    "tdx_lookup_people",
+    "tdx_run_saved_search",
+    "tdx_search_assets",
+    "tdx_search_cis",
+    "tdx_search_groups",
+    "tdx_search_issues",
+    "tdx_search_people",
+    "tdx_search_projects",
+    "tdx_search_tickets",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > default / no assets 1`] = `
+{
+  "count": 32,
+  "instructions": "This server's policy denies edit and destroy tools by default, so some write tools are not registered. Asset and CMDB tools are not registered because no Asset/CI application is available to this account. TeamDynamix ticketing, projects, issues, people, and reports. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [
+    "triage_ticket",
+    "weekly_ticket_report",
+  ],
+  "tools": [
+    "tdx_add_project_comment",
+    "tdx_add_ticket_comment",
+    "tdx_create_issue",
+    "tdx_create_project",
+    "tdx_create_ticket",
+    "tdx_create_ticket_task",
+    "tdx_get_current_user",
+    "tdx_get_group",
+    "tdx_get_group_members",
+    "tdx_get_issue",
+    "tdx_get_person",
+    "tdx_get_person_uid",
+    "tdx_get_project",
+    "tdx_get_project_feed",
+    "tdx_get_report",
+    "tdx_get_ticket",
+    "tdx_get_ticket_feed",
+    "tdx_get_ticket_reference",
+    "tdx_get_ticket_tasks",
+    "tdx_list_accounts",
+    "tdx_list_applications",
+    "tdx_list_custom_attributes",
+    "tdx_list_locations",
+    "tdx_list_reports",
+    "tdx_list_saved_searches",
+    "tdx_lookup_people",
+    "tdx_run_saved_search",
+    "tdx_search_groups",
+    "tdx_search_issues",
+    "tdx_search_people",
+    "tdx_search_projects",
+    "tdx_search_tickets",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > default / no projects 1`] = `
+{
+  "count": 38,
+  "instructions": "This server's policy denies edit and destroy tools by default, so some write tools are not registered. Project and issue tools are not registered because no Projects application is available to this account. TeamDynamix ticketing, assets, CMDB, people, and reports. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [
+    "triage_ticket",
+    "weekly_ticket_report",
+  ],
+  "tools": [
+    "tdx_add_asset_comment",
+    "tdx_add_ci_comment",
+    "tdx_add_ci_relationship",
+    "tdx_add_ticket_comment",
+    "tdx_create_asset",
+    "tdx_create_ci",
+    "tdx_create_ticket",
+    "tdx_create_ticket_task",
+    "tdx_get_asset",
+    "tdx_get_asset_feed",
+    "tdx_get_asset_reference",
+    "tdx_get_ci",
+    "tdx_get_ci_feed",
+    "tdx_get_ci_relationships",
+    "tdx_get_current_user",
+    "tdx_get_group",
+    "tdx_get_group_members",
+    "tdx_get_person",
+    "tdx_get_person_uid",
+    "tdx_get_report",
+    "tdx_get_ticket",
+    "tdx_get_ticket_feed",
+    "tdx_get_ticket_reference",
+    "tdx_get_ticket_tasks",
+    "tdx_link_ci_to_ticket",
+    "tdx_list_accounts",
+    "tdx_list_applications",
+    "tdx_list_custom_attributes",
+    "tdx_list_locations",
+    "tdx_list_reports",
+    "tdx_list_saved_searches",
+    "tdx_lookup_people",
+    "tdx_run_saved_search",
+    "tdx_search_assets",
+    "tdx_search_cis",
+    "tdx_search_groups",
+    "tdx_search_people",
+    "tdx_search_tickets",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > default / no tickets 1`] = `
+{
+  "count": 38,
+  "instructions": "This server's policy denies edit and destroy tools by default, so some write tools are not registered. Ticketing tools are not registered because no Ticketing application is available to this account. TeamDynamix assets, CMDB, projects, issues, people, and reports. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [],
+  "tools": [
+    "tdx_add_asset_comment",
+    "tdx_add_ci_comment",
+    "tdx_add_ci_relationship",
+    "tdx_add_project_comment",
+    "tdx_create_asset",
+    "tdx_create_ci",
+    "tdx_create_issue",
+    "tdx_create_project",
+    "tdx_get_asset",
+    "tdx_get_asset_feed",
+    "tdx_get_asset_reference",
+    "tdx_get_ci",
+    "tdx_get_ci_feed",
+    "tdx_get_ci_relationships",
+    "tdx_get_current_user",
+    "tdx_get_group",
+    "tdx_get_group_members",
+    "tdx_get_issue",
+    "tdx_get_person",
+    "tdx_get_person_uid",
+    "tdx_get_project",
+    "tdx_get_project_feed",
+    "tdx_get_report",
+    "tdx_link_ci_to_ticket",
+    "tdx_list_accounts",
+    "tdx_list_applications",
+    "tdx_list_custom_attributes",
+    "tdx_list_locations",
+    "tdx_list_reports",
+    "tdx_list_saved_searches",
+    "tdx_lookup_people",
+    "tdx_run_saved_search",
+    "tdx_search_assets",
+    "tdx_search_cis",
+    "tdx_search_groups",
+    "tdx_search_issues",
+    "tdx_search_people",
+    "tdx_search_projects",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > default / unknown 1`] = `
+{
+  "count": 46,
+  "instructions": "This server's policy denies edit and destroy tools by default, so some write tools are not registered. TeamDynamix ticketing, assets, CMDB, projects, issues, people, and reports. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [
+    "triage_ticket",
+    "weekly_ticket_report",
+  ],
+  "tools": [
+    "tdx_add_asset_comment",
+    "tdx_add_ci_comment",
+    "tdx_add_ci_relationship",
+    "tdx_add_project_comment",
+    "tdx_add_ticket_comment",
+    "tdx_create_asset",
+    "tdx_create_ci",
+    "tdx_create_issue",
+    "tdx_create_project",
+    "tdx_create_ticket",
+    "tdx_create_ticket_task",
+    "tdx_get_asset",
+    "tdx_get_asset_feed",
+    "tdx_get_asset_reference",
+    "tdx_get_ci",
+    "tdx_get_ci_feed",
+    "tdx_get_ci_relationships",
+    "tdx_get_current_user",
+    "tdx_get_group",
+    "tdx_get_group_members",
+    "tdx_get_issue",
+    "tdx_get_person",
+    "tdx_get_person_uid",
+    "tdx_get_project",
+    "tdx_get_project_feed",
+    "tdx_get_report",
+    "tdx_get_ticket",
+    "tdx_get_ticket_feed",
+    "tdx_get_ticket_reference",
+    "tdx_get_ticket_tasks",
+    "tdx_link_ci_to_ticket",
+    "tdx_list_accounts",
+    "tdx_list_applications",
+    "tdx_list_custom_attributes",
+    "tdx_list_locations",
+    "tdx_list_reports",
+    "tdx_list_saved_searches",
+    "tdx_lookup_people",
+    "tdx_run_saved_search",
+    "tdx_search_assets",
+    "tdx_search_cis",
+    "tdx_search_groups",
+    "tdx_search_issues",
+    "tdx_search_people",
+    "tdx_search_projects",
+    "tdx_search_tickets",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > read-only / all apps 1`] = `
+{
+  "count": 34,
+  "instructions": "This TeamDynamix MCP server is configured read-only; no write tools are registered. TeamDynamix ticketing, assets, CMDB, projects, issues, people, and reports. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [
+    "triage_ticket",
+    "weekly_ticket_report",
+  ],
+  "tools": [
+    "tdx_get_asset",
+    "tdx_get_asset_feed",
+    "tdx_get_asset_reference",
+    "tdx_get_ci",
+    "tdx_get_ci_feed",
+    "tdx_get_ci_relationships",
+    "tdx_get_current_user",
+    "tdx_get_group",
+    "tdx_get_group_members",
+    "tdx_get_issue",
+    "tdx_get_person",
+    "tdx_get_person_uid",
+    "tdx_get_project",
+    "tdx_get_project_feed",
+    "tdx_get_report",
+    "tdx_get_ticket",
+    "tdx_get_ticket_feed",
+    "tdx_get_ticket_reference",
+    "tdx_get_ticket_tasks",
+    "tdx_list_accounts",
+    "tdx_list_applications",
+    "tdx_list_custom_attributes",
+    "tdx_list_locations",
+    "tdx_list_reports",
+    "tdx_list_saved_searches",
+    "tdx_lookup_people",
+    "tdx_run_saved_search",
+    "tdx_search_assets",
+    "tdx_search_cis",
+    "tdx_search_groups",
+    "tdx_search_issues",
+    "tdx_search_people",
+    "tdx_search_projects",
+    "tdx_search_tickets",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > read-only / gating off 1`] = `
+{
+  "count": 34,
+  "instructions": "This TeamDynamix MCP server is configured read-only; no write tools are registered. TeamDynamix ticketing, assets, CMDB, projects, issues, people, and reports. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [
+    "triage_ticket",
+    "weekly_ticket_report",
+  ],
+  "tools": [
+    "tdx_get_asset",
+    "tdx_get_asset_feed",
+    "tdx_get_asset_reference",
+    "tdx_get_ci",
+    "tdx_get_ci_feed",
+    "tdx_get_ci_relationships",
+    "tdx_get_current_user",
+    "tdx_get_group",
+    "tdx_get_group_members",
+    "tdx_get_issue",
+    "tdx_get_person",
+    "tdx_get_person_uid",
+    "tdx_get_project",
+    "tdx_get_project_feed",
+    "tdx_get_report",
+    "tdx_get_ticket",
+    "tdx_get_ticket_feed",
+    "tdx_get_ticket_reference",
+    "tdx_get_ticket_tasks",
+    "tdx_list_accounts",
+    "tdx_list_applications",
+    "tdx_list_custom_attributes",
+    "tdx_list_locations",
+    "tdx_list_reports",
+    "tdx_list_saved_searches",
+    "tdx_lookup_people",
+    "tdx_run_saved_search",
+    "tdx_search_assets",
+    "tdx_search_cis",
+    "tdx_search_groups",
+    "tdx_search_issues",
+    "tdx_search_people",
+    "tdx_search_projects",
+    "tdx_search_tickets",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > read-only / no assets 1`] = `
+{
+  "count": 26,
+  "instructions": "This TeamDynamix MCP server is configured read-only; no write tools are registered. Asset and CMDB tools are not registered because no Asset/CI application is available to this account. TeamDynamix ticketing, projects, issues, people, and reports. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [
+    "triage_ticket",
+    "weekly_ticket_report",
+  ],
+  "tools": [
+    "tdx_get_current_user",
+    "tdx_get_group",
+    "tdx_get_group_members",
+    "tdx_get_issue",
+    "tdx_get_person",
+    "tdx_get_person_uid",
+    "tdx_get_project",
+    "tdx_get_project_feed",
+    "tdx_get_report",
+    "tdx_get_ticket",
+    "tdx_get_ticket_feed",
+    "tdx_get_ticket_reference",
+    "tdx_get_ticket_tasks",
+    "tdx_list_accounts",
+    "tdx_list_applications",
+    "tdx_list_custom_attributes",
+    "tdx_list_locations",
+    "tdx_list_reports",
+    "tdx_list_saved_searches",
+    "tdx_lookup_people",
+    "tdx_run_saved_search",
+    "tdx_search_groups",
+    "tdx_search_issues",
+    "tdx_search_people",
+    "tdx_search_projects",
+    "tdx_search_tickets",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > read-only / no projects 1`] = `
+{
+  "count": 29,
+  "instructions": "This TeamDynamix MCP server is configured read-only; no write tools are registered. Project and issue tools are not registered because no Projects application is available to this account. TeamDynamix ticketing, assets, CMDB, people, and reports. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [
+    "triage_ticket",
+    "weekly_ticket_report",
+  ],
+  "tools": [
+    "tdx_get_asset",
+    "tdx_get_asset_feed",
+    "tdx_get_asset_reference",
+    "tdx_get_ci",
+    "tdx_get_ci_feed",
+    "tdx_get_ci_relationships",
+    "tdx_get_current_user",
+    "tdx_get_group",
+    "tdx_get_group_members",
+    "tdx_get_person",
+    "tdx_get_person_uid",
+    "tdx_get_report",
+    "tdx_get_ticket",
+    "tdx_get_ticket_feed",
+    "tdx_get_ticket_reference",
+    "tdx_get_ticket_tasks",
+    "tdx_list_accounts",
+    "tdx_list_applications",
+    "tdx_list_custom_attributes",
+    "tdx_list_locations",
+    "tdx_list_reports",
+    "tdx_list_saved_searches",
+    "tdx_lookup_people",
+    "tdx_run_saved_search",
+    "tdx_search_assets",
+    "tdx_search_cis",
+    "tdx_search_groups",
+    "tdx_search_people",
+    "tdx_search_tickets",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > read-only / no tickets 1`] = `
+{
+  "count": 29,
+  "instructions": "This TeamDynamix MCP server is configured read-only; no write tools are registered. Ticketing tools are not registered because no Ticketing application is available to this account. TeamDynamix assets, CMDB, projects, issues, people, and reports. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [],
+  "tools": [
+    "tdx_get_asset",
+    "tdx_get_asset_feed",
+    "tdx_get_asset_reference",
+    "tdx_get_ci",
+    "tdx_get_ci_feed",
+    "tdx_get_ci_relationships",
+    "tdx_get_current_user",
+    "tdx_get_group",
+    "tdx_get_group_members",
+    "tdx_get_issue",
+    "tdx_get_person",
+    "tdx_get_person_uid",
+    "tdx_get_project",
+    "tdx_get_project_feed",
+    "tdx_get_report",
+    "tdx_list_accounts",
+    "tdx_list_applications",
+    "tdx_list_custom_attributes",
+    "tdx_list_locations",
+    "tdx_list_reports",
+    "tdx_list_saved_searches",
+    "tdx_lookup_people",
+    "tdx_run_saved_search",
+    "tdx_search_assets",
+    "tdx_search_cis",
+    "tdx_search_groups",
+    "tdx_search_issues",
+    "tdx_search_people",
+    "tdx_search_projects",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > read-only / unknown 1`] = `
+{
+  "count": 34,
+  "instructions": "This TeamDynamix MCP server is configured read-only; no write tools are registered. TeamDynamix ticketing, assets, CMDB, projects, issues, people, and reports. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [
+    "triage_ticket",
+    "weekly_ticket_report",
+  ],
+  "tools": [
+    "tdx_get_asset",
+    "tdx_get_asset_feed",
+    "tdx_get_asset_reference",
+    "tdx_get_ci",
+    "tdx_get_ci_feed",
+    "tdx_get_ci_relationships",
+    "tdx_get_current_user",
+    "tdx_get_group",
+    "tdx_get_group_members",
+    "tdx_get_issue",
+    "tdx_get_person",
+    "tdx_get_person_uid",
+    "tdx_get_project",
+    "tdx_get_project_feed",
+    "tdx_get_report",
+    "tdx_get_ticket",
+    "tdx_get_ticket_feed",
+    "tdx_get_ticket_reference",
+    "tdx_get_ticket_tasks",
+    "tdx_list_accounts",
+    "tdx_list_applications",
+    "tdx_list_custom_attributes",
+    "tdx_list_locations",
+    "tdx_list_reports",
+    "tdx_list_saved_searches",
+    "tdx_lookup_people",
+    "tdx_run_saved_search",
+    "tdx_search_assets",
+    "tdx_search_cis",
+    "tdx_search_groups",
+    "tdx_search_issues",
+    "tdx_search_people",
+    "tdx_search_projects",
+    "tdx_search_tickets",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > toolsets tickets / all apps 1`] = `
+{
+  "count": 13,
+  "instructions": "This server's policy denies edit and destroy tools by default, so some write tools are not registered. This server exposes only these areas: tickets. TeamDynamix ticketing. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [
+    "triage_ticket",
+    "weekly_ticket_report",
+  ],
+  "tools": [
+    "tdx_add_ticket_comment",
+    "tdx_create_ticket",
+    "tdx_create_ticket_task",
+    "tdx_get_current_user",
+    "tdx_get_ticket",
+    "tdx_get_ticket_feed",
+    "tdx_get_ticket_reference",
+    "tdx_get_ticket_tasks",
+    "tdx_list_accounts",
+    "tdx_list_applications",
+    "tdx_list_custom_attributes",
+    "tdx_list_locations",
+    "tdx_search_tickets",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > toolsets tickets / gating off 1`] = `
+{
+  "count": 13,
+  "instructions": "This server's policy denies edit and destroy tools by default, so some write tools are not registered. This server exposes only these areas: tickets. TeamDynamix ticketing. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [
+    "triage_ticket",
+    "weekly_ticket_report",
+  ],
+  "tools": [
+    "tdx_add_ticket_comment",
+    "tdx_create_ticket",
+    "tdx_create_ticket_task",
+    "tdx_get_current_user",
+    "tdx_get_ticket",
+    "tdx_get_ticket_feed",
+    "tdx_get_ticket_reference",
+    "tdx_get_ticket_tasks",
+    "tdx_list_accounts",
+    "tdx_list_applications",
+    "tdx_list_custom_attributes",
+    "tdx_list_locations",
+    "tdx_search_tickets",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > toolsets tickets / no assets 1`] = `
+{
+  "count": 13,
+  "instructions": "This server's policy denies edit and destroy tools by default, so some write tools are not registered. This server exposes only these areas: tickets. TeamDynamix ticketing. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [
+    "triage_ticket",
+    "weekly_ticket_report",
+  ],
+  "tools": [
+    "tdx_add_ticket_comment",
+    "tdx_create_ticket",
+    "tdx_create_ticket_task",
+    "tdx_get_current_user",
+    "tdx_get_ticket",
+    "tdx_get_ticket_feed",
+    "tdx_get_ticket_reference",
+    "tdx_get_ticket_tasks",
+    "tdx_list_accounts",
+    "tdx_list_applications",
+    "tdx_list_custom_attributes",
+    "tdx_list_locations",
+    "tdx_search_tickets",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > toolsets tickets / no projects 1`] = `
+{
+  "count": 13,
+  "instructions": "This server's policy denies edit and destroy tools by default, so some write tools are not registered. This server exposes only these areas: tickets. TeamDynamix ticketing. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [
+    "triage_ticket",
+    "weekly_ticket_report",
+  ],
+  "tools": [
+    "tdx_add_ticket_comment",
+    "tdx_create_ticket",
+    "tdx_create_ticket_task",
+    "tdx_get_current_user",
+    "tdx_get_ticket",
+    "tdx_get_ticket_feed",
+    "tdx_get_ticket_reference",
+    "tdx_get_ticket_tasks",
+    "tdx_list_accounts",
+    "tdx_list_applications",
+    "tdx_list_custom_attributes",
+    "tdx_list_locations",
+    "tdx_search_tickets",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > toolsets tickets / no tickets 1`] = `
+{
+  "count": 5,
+  "instructions": "This server's policy denies edit and destroy tools by default, so some write tools are not registered. This server exposes only these areas: tickets. Ticketing tools are not registered because no Ticketing application is available to this account. TeamDynamix. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [],
+  "tools": [
+    "tdx_get_current_user",
+    "tdx_list_accounts",
+    "tdx_list_applications",
+    "tdx_list_custom_attributes",
+    "tdx_list_locations",
+  ],
+}
+`;
+
+exports[`tool surface as a client sees it > toolsets tickets / unknown 1`] = `
+{
+  "count": 13,
+  "instructions": "This server's policy denies edit and destroy tools by default, so some write tools are not registered. This server exposes only these areas: tickets. TeamDynamix ticketing. Workflow: search/get/create/update directly. app_id accepts an application name ('Help Desk') or ID, and status, priority, type and similar arguments accept names ('On Hold') or IDs; a wrong name returns the valid choices. Search tools return partial records; call the matching get tool for full detail. Page with limit/offset or the next_cursor returned in each response; a total shown as 'N+' is a lower bound. Use count_only=true for 'how many' questions and verbosity='compact' when scanning many records. Person arguments accept an email address or 'me' (the signed-in user under SSO) as well as a UID, so a lookup call is usually unnecessary. Pass response_format='json' when you need structured data instead of prose. For large or cross-entity questions prefer tdx_get_report and tdx_run_saved_search. To record progress on a ticket use tdx_add_ticket_comment; tdx_edit_ticket rewrites core fields and may be disabled. Tools annotated readOnlyHint:false change TeamDynamix records; obtain user approval before invoking them.",
+  "prompts": [
+    "triage_ticket",
+    "weekly_ticket_report",
+  ],
+  "tools": [
+    "tdx_add_ticket_comment",
+    "tdx_create_ticket",
+    "tdx_create_ticket_task",
+    "tdx_get_current_user",
+    "tdx_get_ticket",
+    "tdx_get_ticket_feed",
+    "tdx_get_ticket_reference",
+    "tdx_get_ticket_tasks",
+    "tdx_list_accounts",
+    "tdx_list_applications",
+    "tdx_list_custom_attributes",
+    "tdx_list_locations",
+    "tdx_search_tickets",
+  ],
+}
+`;

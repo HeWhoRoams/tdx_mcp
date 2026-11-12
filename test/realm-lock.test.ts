@@ -6,7 +6,7 @@ import { CredentialState, MemoryStatePersistence } from "../src/auth/credential-
 import { RealmLock } from "../src/auth/realm-lock.js";
 import type { SsoBrowserSession } from "../src/auth/sso-browser.js";
 import { SsoRenewalManager } from "../src/auth/sso-renewal.js";
-import type { StoredToken, TokenStore } from "../src/services/token-store.js";
+import type { StoredToken, TokenStore } from "../src/auth/token-store.js";
 
 let dir: string;
 let path: string;

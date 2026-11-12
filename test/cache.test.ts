@@ -1,6 +1,27 @@
 import { describe, expect, it } from "vitest";
 import { TtlCache, searchCacheKey } from "../src/services/cache.js";
 
+describe("TtlCache expiry sweep", () => {
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it("drops expired entries whenever something is stored", async () => {
+    const cache = new TtlCache<string>(100);
+    for (const key of ["a", "b", "c"]) cache.set(key, key, 5);
+    await wait(15);
+    cache.set("d", "d", 1000);
+    expect(cache.size).toBe(1);
+  });
+
+  it("keeps expired entries when the cache serves stale data", async () => {
+    const cache = new TtlCache<string>(100, { keepStale: true });
+    for (const key of ["a", "b", "c"]) cache.set(key, key, 5);
+    await wait(15);
+    cache.set("d", "d", 1000);
+    expect(cache.size).toBe(4);
+    expect(cache.getAllowStale("a")).toEqual({ value: "a", stale: true });
+  });
+});
+
 describe("TtlCache", () => {
   it("returns values until they expire", () => {
     const cache = new TtlCache<string>(10);

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
-import type { StoredToken } from "../services/token-store.js";
+import type { StoredToken } from "./token-store.js";
 import type { IdentityBinding } from "./identity-binding.js";
 
 export type MigrationOutcome = "migrated" | "no-legacy-state" | "already-migrated" | "untouched";

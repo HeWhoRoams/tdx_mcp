@@ -1,11 +1,11 @@
-import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import type { BrowserChannel } from "./auth/sso-types.js";
-import { resolveToolPolicy, ToolPolicyError, type ToolPolicy } from "./policy/index.js";
-import { ToolPolicyFileSchema, type ToolPolicyFile } from "./policy/schema.js";
+import { ToolPolicyError, type ToolPolicy } from "./policy/index.js";
+import { loadToolPolicy } from "./policy/load.js";
+import { MAX_SEARCH_FETCH } from "./constants.js";
 
 /**
  * Single source of truth for environment configuration. Parsed and validated
@@ -51,6 +51,11 @@ const RawEnvSchema = z.object({
   TDX_ALLOW_CAPABILITIES: z.string().optional(),
   TDX_ALLOW_TOOLS: z.string().optional(),
   TDX_DENY_TOOLS: z.string().optional(),
+  /** Comma-separated domains to expose; see src/policy. */
+  TDX_TOOLSETS: z.string().optional(),
+  /** `auto` hides tools whose application does not exist in this account; `off` registers everything the policy allows. */
+  TDX_APP_GATING: z.enum(["auto", "off"]).default("auto"),
+  TDX_APP_GATING_TIMEOUT_MS: IntFromEnv(2_500, 0, 30_000),
 
   TEAMDYNAMIX_TIMEOUT_MS: IntFromEnv(15_000, 1_000, 300_000),
   TEAMDYNAMIX_MAX_SOCKETS: IntFromEnv(8, 1, 128),
@@ -59,9 +64,15 @@ const RawEnvSchema = z.object({
   TEAMDYNAMIX_MAX_RETRY_DELAY_MS: IntFromEnv(60_000, 1_000, 300_000),
   TEAMDYNAMIX_RATE_LIMIT: IntFromEnv(30, 1, 1000),
   TEAMDYNAMIX_RATE_WINDOW_MS: IntFromEnv(60_000, 1_000, 600_000),
+  /** Optional ceiling across all routes, for deployments sharing an IP with other integrations. 0 = off. */
+  TEAMDYNAMIX_GLOBAL_RATE_LIMIT: IntFromEnv(0, 0, 10_000),
+  /** A call whose estimated wait for a rate-limit slot exceeds this fails at once instead of outliving the client's timeout. */
+  TEAMDYNAMIX_MAX_QUEUE_WAIT_MS: IntFromEnv(50_000, 1_000, 600_000),
 
   TEAMDYNAMIX_CACHE_TTL_MS: IntFromEnv(600_000, 0, 86_400_000),
   TEAMDYNAMIX_SEARCH_CACHE_TTL_MS: IntFromEnv(60_000, 0, 3_600_000),
+  /** Rows fetched for a count-only search. Raise it only after confirming the tenant accepts the larger MaxResults. */
+  TEAMDYNAMIX_COUNT_WINDOW: IntFromEnv(251, 1, 1000),
   TEAMDYNAMIX_RECORD_CACHE_TTL_MS: IntFromEnv(30_000, 0, 3_600_000),
   TEAMDYNAMIX_CACHE_MAX_ENTRIES: IntFromEnv(500, 10, 100_000),
   TEAMDYNAMIX_DEFAULT_APP_ID: z
@@ -78,6 +89,27 @@ const RawEnvSchema = z.object({
   MCP_ALLOWED_ORIGINS: z.string().optional(),
 
   TDX_LOG_LEVEL: LogLevelSchema,
+
+  /** `both` returns JSON in the text block and as structuredContent; `text` omits structuredContent for clients that show both. */
+  TDX_STRUCTURED_CONTENT: z.enum(["both", "text"]).default("both"),
+
+  /** IANA time zone for dates in markdown output (for example America/New_York). Defaults to the process time zone. */
+  TDX_TIMEZONE: z
+    .string()
+    .optional()
+    .transform((value) => (value === undefined || value.trim() === "" ? undefined : value.trim()))
+    .refine(
+      (value) => {
+        if (value === undefined) return true;
+        try {
+          new Intl.DateTimeFormat("en-US", { timeZone: value });
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      { message: "TDX_TIMEZONE must be an IANA time zone name such as America/New_York." }
+    ),
 });
 
 export type LogLevel = z.infer<typeof LogLevelSchema>;
@@ -102,6 +134,8 @@ export interface Config {
   readOnly: boolean;
   /** Which tools may be registered and invoked; see src/policy. */
   toolPolicy: ToolPolicy;
+  /** Hiding tools for applications the account does not have. Fails open; never a security control. */
+  appGating: { mode: "auto" | "off"; timeoutMs: number };
   tokenCache: "memory" | "file";
   http: {
     timeoutMs: number;
@@ -112,10 +146,14 @@ export interface Config {
     maxRetryDelayMs: number;
     rateLimit: number;
     rateWindowMs: number;
+    globalRateLimit: number;
+    maxQueueWaitMs: number;
   };
   cache: {
     referenceTtlMs: number;
     searchTtlMs: number;
+    /** Rows fetched for a count-only search (at least the normal search window). */
+    countWindow: number;
     recordTtlMs: number;
     maxEntries: number;
   };
@@ -131,6 +169,10 @@ export interface Config {
     allowedOrigins: string[];
   };
   logLevel: LogLevel;
+  /** How `response_format=json` results are delivered; see TDX_STRUCTURED_CONTENT. */
+  structuredContent: "both" | "text";
+  /** IANA time zone used when printing dates; undefined means the process time zone. */
+  timeZone?: string;
 }
 
 export class ConfigError extends Error {}
@@ -202,6 +244,9 @@ export function resolveTdxHome(
   return join(env.XDG_STATE_HOME ?? join(home, ".local", "state"), "tdx-mcp");
 }
 
+/** Shortest bearer token accepted when the HTTP transport is reachable from the network. */
+const MIN_REMOTE_AUTH_TOKEN_LENGTH = 24;
+
 export function getTdxHome(): string {
   return resolveTdxHome(parseCliEnv(), process.platform, homedir());
 }
@@ -226,32 +271,8 @@ function splitList(value: string | undefined): string[] {
   return value?.split(",").map((entry) => entry.trim()).filter(Boolean) ?? [];
 }
 
-const DEFAULT_POLICY_PATH = fileURLToPath(new URL("../config/tool-policy.json", import.meta.url));
-
-function loadPolicyFile(path: string, required: boolean): { data: unknown; source: string } | undefined {
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf8");
-  } catch (error) {
-    if (!required && (error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw new ToolPolicyError(`Could not read tool policy file at ${path}: ${(error as Error).message}`);
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    throw new ToolPolicyError(`Tool policy file at ${path} is not valid JSON: ${(error as Error).message}`);
-  }
-
-  const validated = ToolPolicyFileSchema.safeParse(parsed);
-  if (!validated.success) {
-    const details = validated.error.issues.map((issue) => `  - ${issue.path.join(".") || "(root)"}: ${issue.message}`);
-    throw new ToolPolicyError(`Invalid tool policy file at ${path}:\n${details.join("\n")}`);
-  }
-
-  return { data: validated.data, source: path };
-}
+/** Project root, one level above src/ or dist/. Relative file settings resolve here, not against the client's cwd. */
+const PROJECT_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 function buildConfig(env: NodeJS.ProcessEnv): Config {
   if (env.TEAMDYNAMIX_SSO_DEPLOYMENT !== undefined) {
@@ -357,17 +378,18 @@ function buildConfig(env: NodeJS.ProcessEnv): Config {
     );
   }
 
+  if (raw.TRANSPORT === "http" && !isLoopback && raw.MCP_AUTH_TOKEN && raw.MCP_AUTH_TOKEN.length < MIN_REMOTE_AUTH_TOKEN_LENGTH) {
+    throw new ConfigError(
+      `MCP_AUTH_TOKEN must be at least ${MIN_REMOTE_AUTH_TOKEN_LENGTH} characters when HOST is not a loopback address. Generate one with: node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"`
+    );
+  }
+
   let toolPolicy: ToolPolicy;
   try {
-    const explicitPolicyPath = raw.TDX_TOOL_POLICY_FILE?.trim();
-    const policyPath = explicitPolicyPath || DEFAULT_POLICY_PATH;
-    const loaded = loadPolicyFile(policyPath, explicitPolicyPath !== undefined && explicitPolicyPath !== "");
-    toolPolicy = resolveToolPolicy({
-      ...(loaded ? { policyData: loaded.data as Partial<ToolPolicyFile>, source: loaded.source } : {}),
-      allowCapabilities: splitList(raw.TDX_ALLOW_CAPABILITIES),
-      allowTools: splitList(raw.TDX_ALLOW_TOOLS),
-      denyTools: splitList(raw.TDX_DENY_TOOLS),
-      readOnly: raw.TEAMDYNAMIX_READ_ONLY,
+    toolPolicy = loadToolPolicy({
+      env: raw,
+      projectRoot: PROJECT_ROOT,
+      warn: (message) => process.stderr.write(`${message}\n`),
     });
   } catch (error) {
     if (error instanceof ToolPolicyError) throw new ConfigError(error.message);
@@ -383,6 +405,7 @@ function buildConfig(env: NodeJS.ProcessEnv): Config {
       auth.method === "admin" ? `admin:${auth.beid}` : auth.method === "user" ? `user:${auth.username}` : "sso",
     readOnly: raw.TEAMDYNAMIX_READ_ONLY,
     toolPolicy,
+    appGating: { mode: raw.TDX_APP_GATING, timeoutMs: raw.TDX_APP_GATING_TIMEOUT_MS },
     tokenCache: raw.TEAMDYNAMIX_TOKEN_CACHE,
     http: {
       timeoutMs: raw.TEAMDYNAMIX_TIMEOUT_MS,
@@ -392,10 +415,13 @@ function buildConfig(env: NodeJS.ProcessEnv): Config {
       maxRetryDelayMs: raw.TEAMDYNAMIX_MAX_RETRY_DELAY_MS,
       rateLimit: raw.TEAMDYNAMIX_RATE_LIMIT,
       rateWindowMs: raw.TEAMDYNAMIX_RATE_WINDOW_MS,
+      globalRateLimit: raw.TEAMDYNAMIX_GLOBAL_RATE_LIMIT,
+      maxQueueWaitMs: raw.TEAMDYNAMIX_MAX_QUEUE_WAIT_MS,
     },
     cache: {
       referenceTtlMs: raw.TEAMDYNAMIX_CACHE_TTL_MS,
       searchTtlMs: raw.TEAMDYNAMIX_SEARCH_CACHE_TTL_MS,
+      countWindow: Math.max(raw.TEAMDYNAMIX_COUNT_WINDOW, MAX_SEARCH_FETCH),
       recordTtlMs: raw.TEAMDYNAMIX_RECORD_CACHE_TTL_MS,
       maxEntries: raw.TEAMDYNAMIX_CACHE_MAX_ENTRIES,
     },
@@ -410,6 +436,8 @@ function buildConfig(env: NodeJS.ProcessEnv): Config {
       allowedOrigins: splitList(raw.MCP_ALLOWED_ORIGINS),
     },
     logLevel: raw.TDX_LOG_LEVEL,
+    structuredContent: raw.TDX_STRUCTURED_CONTENT,
+    ...(raw.TDX_TIMEZONE !== undefined ? { timeZone: raw.TDX_TIMEZONE } : {}),
   };
 }
 

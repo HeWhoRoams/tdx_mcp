@@ -20,10 +20,6 @@ function threshold(): number {
   return cachedThreshold;
 }
 
-export function resetLogger(): void {
-  cachedThreshold = undefined;
-}
-
 function emit(level: Exclude<LogLevel, "silent">, message: string, fields?: Record<string, unknown>): void {
   if (LEVEL_RANK[level] < threshold()) return;
   const record = { ts: new Date().toISOString(), level, msg: message, ...fields };
@@ -69,6 +65,3 @@ export function getCounters(): Readonly<Counters> {
   return { ...counters };
 }
 
-export function resetCounters(): void {
-  for (const key of Object.keys(counters) as Array<keyof Counters>) counters[key] = 0;
-}

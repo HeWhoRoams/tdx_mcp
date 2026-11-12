@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { getConfig } from "../config.js";
 import { MAX_SEARCH_FETCH, PAGING_WINDOW } from "../constants.js";
-import { ToolInputError } from "../framework/defineTool.js";
+import { ToolInputError } from "./errors.js";
 import { decodeCursor, paginate, type PaginatedResult } from "../types.js";
 import { cachingAllowed, getSearchCache, searchCacheKey } from "./cache.js";
 import { tdRequest } from "./client.js";
+import type { RenderedBlocks } from "./budget.js";
 import { increment, logger } from "./logger.js";
 
 interface CachedSearch<T> {
@@ -28,7 +29,7 @@ export interface SearchOptions {
   sortFields?: Record<string, string>;
 }
 
-function signature(cacheKey: string, sortKey: string): string {
+export function signature(cacheKey: string, sortKey: string): string {
   return createHash("sha256").update(`${cacheKey}|${sortKey}`).digest("hex").slice(0, 8);
 }
 
@@ -85,7 +86,8 @@ export async function searchPage<T>(
   }
 
   const limit = args.count_only ? 0 : args.limit;
-  const needed = args.count_only ? MAX_SEARCH_FETCH : offset + limit + 1;
+  const countWindow = getConfig().cache.countWindow;
+  const needed = args.count_only ? countWindow : offset + limit + 1;
   const ttlMs = getConfig().cache.searchTtlMs;
   const cache = getSearchCache();
 
@@ -98,7 +100,8 @@ export async function searchPage<T>(
   // Sorting a single page would rank only the rows TeamDynamix happened to
   // return first, which reads as a global ranking but is not one.
   const wantsFullWindow = args.count_only === true || args.sort_by !== undefined;
-  const required = wantsFullWindow ? MAX_SEARCH_FETCH : needed;
+  const fullWindow = args.count_only === true ? countWindow : MAX_SEARCH_FETCH;
+  const required = wantsFullWindow ? fullWindow : needed;
   if (cached && (isComplete || cached.items.length >= required)) {
     increment("cacheHits");
     logger.debug("search cache hit", { endpoint, offset });
@@ -109,7 +112,7 @@ export async function searchPage<T>(
     // geometrically: a few extra rows now save a whole round trip per later page.
     const paging = offset > 0 || cached !== undefined;
     fetched = wantsFullWindow
-      ? MAX_SEARCH_FETCH
+      ? fullWindow
       : Math.min(MAX_SEARCH_FETCH, paging ? Math.max(needed * 2, PAGING_WINDOW) : needed);
     items =
       (await tdRequest<T[]>(endpoint, {
@@ -134,33 +137,48 @@ export async function searchPage<T>(
     };
   }
 
-  return paginate(applySort(items, args, options), limit, offset, { signature: sig, totalIsLowerBound });
+  const page = paginate(applySort(items, args, options), limit, offset, { signature: sig, totalIsLowerBound });
+  return args.sort_by && totalIsLowerBound ? { ...page, sorted_within_window: true } : page;
 }
 
 /** Guidance shown when a search filled its window and more records likely exist. */
 export function windowHint(page: PaginatedResult<unknown>): string | undefined {
   if (!page.total_is_lower_bound) return undefined;
   return (
-    `Only the first ${MAX_SEARCH_FETCH} matches are retrievable here. ` +
-    `Add filters to narrow the search, or use teamdynamix_run_saved_search / teamdynamix_get_report for complete result sets.`
+    `Only the first ${Math.max(MAX_SEARCH_FETCH, page.total)} matches are retrievable here. ` +
+    `Add filters to narrow the search, or use tdx_run_saved_search / tdx_get_report for complete result sets.`
   );
 }
 
-/** Trailing paging and window notes shared by every search renderer. */
-export function pagingFooter(page: PaginatedResult<unknown>): string[] {
-  const lines: string[] = [];
-  if (page.has_more) {
-    lines.push(`_More results available. Use offset=${page.next_offset} or cursor=${page.next_cursor}._`);
-  }
+/** The "more results" line for a page, or undefined on the last page. */
+export function moreLine(page: PaginatedResult<unknown>): string | undefined {
+  return page.has_more ? `_More results available. Use offset=${page.next_offset} or cursor=${page.next_cursor}._` : undefined;
+}
+
+/** Search renderer result: heading, one block per record, then window notes and the paging line. */
+export function pageBlocks(
+  title: string,
+  noun: string,
+  page: PaginatedResult<unknown>,
+  blocks: string[],
+  separator: "\n" | "\n\n" = "\n\n"
+): RenderedBlocks {
   const hint = windowHint(page);
-  if (hint) lines.push(`_${hint}_`);
-  return lines;
+  return {
+    header: resultsHeading(title, page, noun),
+    blocks,
+    separator,
+    footer: hint ? [`_${hint}_`] : [],
+    ...(page.has_more ? { more: moreLine(page)! } : {}),
+    offset: page.offset,
+  };
 }
 
 /** Heading shared by every search renderer, honest about lower-bound totals. */
 export function resultsHeading(title: string, page: PaginatedResult<unknown>, noun: string): string[] {
   const total = `${page.total}${page.total_is_lower_bound ? "+" : ""}`;
-  return [`# ${title}`, "", `Found ${total} ${noun}(s), showing ${page.count}`, ""];
+  const sorted = page.sorted_within_window ? ["_Sorted within the first matches only; add filters for a true ranking._", ""] : [];
+  return [`# ${title}`, "", `Found ${total} ${noun}(s), showing ${page.count}`, "", ...sorted];
 }
 
 /** Rendering for a `count_only` search. */

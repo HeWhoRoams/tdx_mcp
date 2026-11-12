@@ -12,8 +12,8 @@
  */
 
 import axios from "axios";
-import { getApiBaseUrl } from "../src/constants.js";
-import { getAuthMethod, authenticate } from "./auth.js";
+import { getApiBaseUrl } from "../src/config.js";
+import { authorizationHeader } from "./auth.js";
 
 interface TdApp {
   AppID: number;
@@ -38,13 +38,12 @@ async function run() {
     return idx !== -1 ? process.argv[idx + 1]?.toLowerCase() : null;
   })();
 
-  const method = getAuthMethod();
   const http = axios.create({ baseURL: baseUrl, timeout: 15000 });
 
   // Authenticate
-  let token: string;
+  let header: string;
   try {
-    token = await authenticate(http, method);
+    header = await authorizationHeader();
   } catch (err) {
     if (axios.isAxiosError(err)) {
       console.error(`❌ Authentication failed: HTTP ${err.response?.status}`, err.response?.data ?? err.message);
@@ -58,7 +57,7 @@ async function run() {
   let apps: TdApp[];
   try {
     const res = await http.get<TdApp[]>("/applications", {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: header },
     });
     apps = res.data;
   } catch (err) {

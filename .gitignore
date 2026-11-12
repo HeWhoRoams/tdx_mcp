@@ -1,6 +1,13 @@
 node_modules/
 dist/
+build/
 .env
+.env.sandbox
 *.log
 hermes_info.md
+planning/
 .vscode/
+config/tool-policy.local.json
+.mcp.json
+.superpowers/
+.sensitive-terms.local

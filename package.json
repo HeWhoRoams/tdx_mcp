@@ -1,12 +1,19 @@
 {
   "name": "teamdynamix-mcp-server",
-  "version": "2.1.0",
+  "version": "4.0.0",
   "description": "MCP server for the TeamDynamix Web API (tickets, assets/CIs, projects, issues, people/groups, reference data)",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
     "teamdynamix-mcp-server": "dist/index.js"
   },
+  "files": [
+    "dist/",
+    "config/tool-policy.json",
+    "config/tool-policy.schema.json",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "start": "node dist/index.js",
     "login": "node dist/index.js login",
@@ -17,13 +24,22 @@
     "build": "tsc && shx chmod +x dist/index.js",
     "clean": "shx rm -rf dist",
     "check:scripts": "tsc --project scripts/tsconfig.json",
+    "check:sensitive": "node scripts/check-sensitive.mjs --tree --require-terms",
+    "check:package": "node scripts/check-package.mjs",
+    "sensitive:add-term": "node scripts/add-sensitive-term.mjs",
+    "hooks:install": "git config core.hooksPath .githooks",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:url": "tsx scripts/url-resolution-test.ts",
     "test:mcp": "npm run build && tsx scripts/mcp-protocol-test.ts",
+    "test:contract": "tsx scripts/contract-test.ts",
     "test:hermes-sso": "tsx scripts/hermes-sso-compat.ts",
     "test:all": "npm run test && npm run check:scripts && npm run test:mcp",
+    "prepublishOnly": "npm run test:all && npm run check:sensitive && npm run check:package",
+    "pack:mcpb": "node scripts/pack-mcpb.mjs",
+    "init": "node dist/index.js init",
     "policy:sync": "tsx scripts/sync-tool-policy.ts",
+    "tools:explain": "tsx scripts/explain-tools.ts",
     "bench": "tsx scripts/bench.ts",
     "measure:window": "tsx scripts/measure-window.ts",
     "verify": "tsx scripts/verify-connection.ts",

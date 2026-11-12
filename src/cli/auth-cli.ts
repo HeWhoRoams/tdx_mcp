@@ -6,10 +6,11 @@ import {
 } from "../auth/sso-login.js";
 import type { SignOutResult } from "../auth/sso-lifecycle.js";
 import { buildSsoLifecycle } from "../auth/sso-composition.js";
+import { runInteractiveLogin } from "../auth/interactive-login.js";
 import { getConfig, isSsoConfig } from "../config.js";
-import type { StoredToken } from "../services/token-store.js";
+import type { StoredToken } from "../auth/token-store.js";
 
-function promptHidden(question: string): Promise<string> {
+export function promptHidden(question: string): Promise<string> {
   return new Promise((resolve) => {
     process.stderr.write(question);
     const stdin = process.stdin;
@@ -70,7 +71,7 @@ export async function runAuthCli(command: string, args: string[]): Promise<numbe
         if (!token) throw new SsoLoginError("No JWT found in what was pasted.");
       } else {
         process.stderr.write(`Starting ${config.auth.deployment === "external" ? "Hermes" : "local"} SSO sign-in for ${environmentLabel(apiBaseUrl)}...\n`);
-        const stored = await lifecycle.login();
+        const stored = await runInteractiveLogin(config, { lifecycle });
         process.stdout.write(`Signed in: ${describe(stored, apiBaseUrl)}\n`);
         return 0;
       }

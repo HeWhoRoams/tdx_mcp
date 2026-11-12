@@ -42,6 +42,8 @@ export const ToolPolicyFileSchema = z
     defaults: CapabilityRulesSchema.optional(),
     domains: z.record(z.string(), CapabilityRulesSchema).optional(),
     tools: z.record(z.string(), RuleSchema).optional(),
+    /** Coarse allowlist of domains (see TDX_TOOLSETS); the environment variable overrides it. */
+    toolsets: z.array(z.string()).optional(),
     /**
      * Several TeamDynamix endpoints have no PATCH, so those tools GET the record
      * and PUT it back. A concurrent change is silently lost, which some hosts
@@ -56,6 +58,15 @@ export const ToolPolicyFileSchema = z
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["domains", domain],
+          message: `unknown domain; expected one of ${TOOL_DOMAINS.join(", ")}`,
+        });
+      }
+    }
+    for (const [index, domain] of (value.toolsets ?? []).entries()) {
+      if (!(TOOL_DOMAINS as readonly string[]).includes(domain)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["toolsets", index],
           message: `unknown domain; expected one of ${TOOL_DOMAINS.join(", ")}`,
         });
       }

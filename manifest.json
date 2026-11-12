@@ -1,0 +1,44 @@
+{
+  "manifest_version": "0.3",
+  "name": "teamdynamix-mcp-server",
+  "display_name": "TeamDynamix",
+  "version": "4.0.0",
+  "description": "Search and work with TeamDynamix tickets, assets, CIs, projects, issues and people, signed in as yourself.",
+  "author": { "name": "Tim Niles" },
+  "repository": { "type": "git", "url": "https://github.com/HeWhoRoams/tdx_mcp" },
+  "license": "MIT",
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/index.js"],
+      "env": {
+        "TEAMDYNAMIX_BASE_URL": "${user_config.base_url}",
+        "TEAMDYNAMIX_AUTH_METHOD": "sso",
+        "TEAMDYNAMIX_SSO_EXPECTED_USER": "${user_config.expected_user}",
+        "TEAMDYNAMIX_DEFAULT_APP_ID": "${user_config.default_app_id}"
+      }
+    }
+  },
+  "user_config": {
+    "base_url": {
+      "type": "string",
+      "title": "TeamDynamix URL",
+      "description": "Your organization's TeamDynamix address, e.g. https://yourorg.teamdynamix.com",
+      "required": true
+    },
+    "expected_user": {
+      "type": "string",
+      "title": "Your TeamDynamix email",
+      "description": "Pins sign-in to you, so a different account in the sign-in browser is refused. Optional.",
+      "required": false
+    },
+    "default_app_id": {
+      "type": "number",
+      "title": "Default ticketing application ID",
+      "description": "Used when a request does not name an application. Optional; find IDs with the list applications tool.",
+      "required": false
+    }
+  }
+}

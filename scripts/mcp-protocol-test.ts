@@ -7,73 +7,68 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
-const expectedToolCount = 64;
+const expectedToolCount = 55;
 /** Denied by the shipped config/tool-policy.json, which allows only read and create. */
 const expectedPolicyDeniedToolNames = new Set([
-  "teamdynamix_edit_ticket",
-  "teamdynamix_edit_ticket_task",
-  "teamdynamix_edit_asset",
-  "teamdynamix_edit_ci",
-  "teamdynamix_edit_project",
-  "teamdynamix_edit_issue",
-  "teamdynamix_add_group_members",
-  "teamdynamix_remove_ci_relationship",
-  "teamdynamix_remove_group_members",
+  "tdx_edit_ticket",
+  "tdx_edit_ticket_task",
+  "tdx_edit_asset",
+  "tdx_edit_ci",
+  "tdx_edit_project",
+  "tdx_edit_issue",
+  "tdx_add_group_members",
+  "tdx_remove_ci_relationship",
+  "tdx_remove_group_members",
 ]);
 const expectedReadOnlyToolNames = new Set([
-  "teamdynamix_get_asset",
-  "teamdynamix_get_asset_feed",
-  "teamdynamix_get_ci",
-  "teamdynamix_get_ci_feed",
-  "teamdynamix_get_ci_relationships",
-  "teamdynamix_get_current_user",
-  "teamdynamix_get_group",
-  "teamdynamix_get_group_members",
-  "teamdynamix_get_issue",
-  "teamdynamix_get_person",
-  "teamdynamix_get_person_uid",
-  "teamdynamix_get_project",
-  "teamdynamix_get_project_feed",
-  "teamdynamix_get_report",
-  "teamdynamix_get_ticket",
-  "teamdynamix_get_ticket_feed",
-  "teamdynamix_get_ticket_tasks",
-  "teamdynamix_list_accounts",
-  "teamdynamix_list_applications",
-  "teamdynamix_list_asset_statuses",
-  "teamdynamix_list_ci_relationship_types",
-  "teamdynamix_list_ci_types",
-  "teamdynamix_list_custom_attributes",
-  "teamdynamix_list_locations",
-  "teamdynamix_list_product_models",
-  "teamdynamix_list_reports",
-  "teamdynamix_list_saved_searches",
-  "teamdynamix_list_ticket_forms",
-  "teamdynamix_list_ticket_impacts",
-  "teamdynamix_list_ticket_priorities",
-  "teamdynamix_list_ticket_sources",
-  "teamdynamix_list_ticket_statuses",
-  "teamdynamix_list_ticket_types",
-  "teamdynamix_list_ticket_urgencies",
-  "teamdynamix_lookup_people",
-  "teamdynamix_run_saved_search",
-  "teamdynamix_search_assets",
-  "teamdynamix_search_cis",
-  "teamdynamix_search_groups",
-  "teamdynamix_search_issues",
-  "teamdynamix_search_people",
-  "teamdynamix_search_projects",
-  "teamdynamix_search_tickets",
+  "tdx_get_asset",
+  "tdx_get_asset_feed",
+  "tdx_get_asset_reference",
+  "tdx_get_ci",
+  "tdx_get_ci_feed",
+  "tdx_get_ci_relationships",
+  "tdx_get_current_user",
+  "tdx_get_group",
+  "tdx_get_group_members",
+  "tdx_get_issue",
+  "tdx_get_person",
+  "tdx_get_person_uid",
+  "tdx_get_project",
+  "tdx_get_project_feed",
+  "tdx_get_report",
+  "tdx_get_ticket",
+  "tdx_get_ticket_feed",
+  "tdx_get_ticket_reference",
+  "tdx_get_ticket_tasks",
+  "tdx_list_accounts",
+  "tdx_list_applications",
+  "tdx_list_custom_attributes",
+  "tdx_list_locations",
+  "tdx_list_reports",
+  "tdx_list_saved_searches",
+  "tdx_lookup_people",
+  "tdx_run_saved_search",
+  "tdx_search_assets",
+  "tdx_search_cis",
+  "tdx_search_groups",
+  "tdx_search_issues",
+  "tdx_search_people",
+  "tdx_search_projects",
+  "tdx_search_tickets",
 ]);
 const authToken = "mcp-protocol-test-token";
 const baseEnvironment = Object.fromEntries(
   Object.entries({
     ...process.env,
     TEAMDYNAMIX_BASE_URL: "https://example.teamdynamix.com",
+    // Pinned so a developer's .env (often SSO) cannot change which tools register.
+    TEAMDYNAMIX_AUTH_METHOD: "admin",
     TEAMDYNAMIX_BEID: "test-beid",
     TEAMDYNAMIX_WS_KEY: "test-key",
     // Most checks assert the complete catalog, so lift the shipped policy's deny defaults.
     TDX_ALLOW_CAPABILITIES: "read,create,edit,destroy",
+    // Fake credentials and a placeholder host: skip the application lookup so the catalog is deterministic.
+    TDX_APP_GATING: "off",
   }).filter((entry): entry is [string, string] => entry[1] !== undefined)
 );
 
@@ -186,7 +181,7 @@ async function testDefaultPolicyStdio(): Promise<void> {
     if (leaked.length > 0) {
       throw new Error(`default policy: edit/destroy tools were registered: ${leaked.join(", ")}.`);
     }
-    for (const allowed of ["teamdynamix_add_ticket_comment", "teamdynamix_create_ticket", "teamdynamix_get_ticket"]) {
+    for (const allowed of ["tdx_add_ticket_comment", "tdx_create_ticket", "tdx_get_ticket"]) {
       if (!names.has(allowed)) throw new Error(`default policy: expected ${allowed} to stay registered.`);
     }
     const expected = expectedToolCount - expectedPolicyDeniedToolNames.size;

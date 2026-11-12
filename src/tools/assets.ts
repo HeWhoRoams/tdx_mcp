@@ -1,9 +1,12 @@
+import { toolName } from "../constants.js";
 import { z } from "zod";
 import { getConfig } from "../config.js";
 import { CREATE, EDIT, READ } from "../framework/annotations.js";
 import { defineTool, ToolInputError, type AnyToolDefinition } from "../framework/defineTool.js";
 import {
   AppIdSchema,
+  refId,
+  refIds,
   AttributesSchema,
   ChildPagingShape,
   PagingShape,
@@ -15,8 +18,9 @@ import {
 import { tdRequest } from "../services/client.js";
 import { resolveAppId, resolvePersonUid, resolvePersonUids } from "../services/context.js";
 import { nameWithId, renderFeed } from "../services/format.js";
+import { renderRecordDetail } from "../services/record.js";
 import { combineHints, referenceHint } from "../services/hints.js";
-import { pagingFooter, renderCount, resultsHeading, searchPage } from "../services/search.js";
+import { pageBlocks, renderCount, searchPage } from "../services/search.js";
 import { paginate, type TdAsset, type TdFeedEntry } from "../types.js";
 
 const AssetIdSchema = z.number().int().positive().describe("The asset ID.");
@@ -28,11 +32,11 @@ const SearchInput = z
     app_id: AppIdSchema,
     search_text: z.string().max(200).optional().describe("Free-text search against asset name/tag/serial number."),
     serial_number: z.string().optional().describe("Exact serial number to search for."),
-    status_ids: z.array(z.number().int()).optional().describe("Filter to these AssetStatus IDs."),
-    owning_customer_uids: z.array(z.string()).optional().describe("Filter by owning customer. Accepts UIDs or email addresses."),
+    status_ids: refIds().optional().describe("Filter to these AssetStatus IDs."),
+    owning_customer_uids: z.array(z.string()).optional().describe("Filter by owning customer. Accepts UIDs, email addresses, or 'me' (the signed-in user, SSO only)."),
     owning_department_ids: z.array(z.number().int()).optional().describe("Filter by owning department/account ID."),
     location_ids: z.array(z.number().int()).optional().describe("Filter by location ID."),
-    product_model_ids: z.array(z.number().int()).optional().describe("Filter by product model ID."),
+    product_model_ids: refIds().optional().describe("Filter by product model ID."),
     sort_by: sortBySchema(["name", "status", "id"]),
     verbosity: VerbositySchema,
     ...PagingShape,
@@ -45,11 +49,11 @@ const CreateInput = z
   .object({
     app_id: AppIdSchema,
     name: z.string().min(1).max(500).describe("The asset name."),
-    status_id: z.number().int().positive().describe("The AssetStatus ID (see teamdynamix_list_asset_statuses)."),
+    status_id: refId().describe("The AssetStatus ID (see tdx_get_asset_reference)."),
     serial_number: z.string().optional().describe("Serial number."),
     tag: z.string().optional().describe("Asset tag."),
-    product_model_id: z.number().int().positive().optional().describe("Product model ID (see teamdynamix_list_product_models)."),
-    location_id: z.number().int().positive().optional().describe("Location ID (see teamdynamix_list_locations)."),
+    product_model_id: refId().optional().describe("Product model ID (see tdx_get_asset_reference)."),
+    location_id: z.number().int().positive().optional().describe("Location ID (see tdx_list_locations)."),
     owning_customer_uid: PersonRefSchema("The owning customer").optional(),
     owning_department_id: z.number().int().positive().optional().describe("Owning department/account ID."),
     custom_attributes: AttributesSchema,
@@ -62,7 +66,7 @@ const UpdateInput = z
     app_id: AppIdSchema,
     asset_id: AssetIdSchema,
     name: z.string().min(1).max(500).optional().describe("New asset name."),
-    status_id: z.number().int().positive().optional().describe("New AssetStatus ID."),
+    status_id: refId().optional().describe("New AssetStatus ID."),
     serial_number: z.string().optional().describe("New serial number."),
     tag: z.string().optional().describe("New asset tag."),
     location_id: z.number().int().positive().optional().describe("New location ID."),
@@ -80,10 +84,12 @@ const CommentInput = z
     app_id: AppIdSchema,
     asset_id: AssetIdSchema,
     comment: z.string().min(1).max(50000).describe("The comment text to add."),
-    notify_uids: z.array(z.string()).optional().describe("People to notify. Accepts UIDs or email addresses."),
+    notify_uids: z.array(z.string()).optional().describe("People to notify. Accepts UIDs, email addresses, or 'me' (the signed-in user, SSO only)."),
     response_format: ResponseFormatSchema,
   })
   .strict();
+
+const ASSET_SHOWN = ["Name", "ID", "StatusName", "StatusID", "Tag", "SerialNumber", "ProductModelName", "LocationName", "OwningCustomerName", "OwningDepartmentName"];
 
 function renderAsset(asset: TdAsset): string {
   return [
@@ -98,27 +104,33 @@ function renderAsset(asset: TdAsset): string {
   ].join("\n");
 }
 
-function renderAssetCompact(asset: TdAsset): string {
+export function renderAssetCompact(asset: TdAsset): string {
   const identifiers = [asset.Tag, asset.SerialNumber].filter(Boolean).join(" / ") || "no tag/serial";
   return `- **#${asset.ID}** ${asset.Name} — ${asset.StatusName ?? "?"} — ${identifiers}`;
 }
 
-const ASSETS = { domain: "assets", appIdFrom: (args: { app_id?: number }) => resolveAppId(args.app_id) };
+const ASSETS = { domain: "assets", appIdFrom: (args: { app_id?: number | string }) => resolveAppId(args.app_id) };
 
-function assetWriteHints(args: { app_id?: number }): string | undefined {
+function assetWriteHints(args: { app_id?: number | string }): string | undefined {
   const appId = resolveAppId(args.app_id);
   return combineHints(referenceHint(appId, "assets/statuses", "status_id values"));
 }
 
 export const assetTools: AnyToolDefinition[] = [
   defineTool({
-    name: "teamdynamix_search_assets",
+    name: toolName("search_assets"),
     title: "Search TeamDynamix Assets",
     description:
       "Searches assets by text, serial, status, owner, location, or product model.\n" +
-      "Returns partial records without custom attributes — use teamdynamix_get_asset for full detail.\n" +
-      "For CMDB configuration items use teamdynamix_search_cis instead.",
+      "Returns partial records without custom attributes — use tdx_get_asset for full detail.\n" +
+      "For CMDB configuration items use tdx_search_cis instead.",
     input: SearchInput,
+    resolve: {
+      reference: {
+        status_ids: { table: "asset", kind: "asset_statuses" },
+        product_model_ids: { table: "asset", kind: "product_models" },
+      },
+    },
     annotations: READ,
     handler: async (args) => {
       const body: Record<string, unknown> = {};
@@ -138,20 +150,19 @@ export const assetTools: AnyToolDefinition[] = [
     emptyMessage: "No assets found matching the given criteria.",
     render: (page, args) => {
       if (args.count_only) return renderCount(page, "asset");
-      const lines = resultsHeading("Asset Search Results", page, "asset");
-      if (args.verbosity === "compact") {
-        for (const asset of page.items) lines.push(renderAssetCompact(asset));
-        lines.push("");
-      } else {
-        for (const asset of page.items) lines.push(renderAsset(asset), "");
-      }
-      lines.push(...pagingFooter(page));
-      return lines.join("\n");
+      const compact = args.verbosity === "compact";
+      return pageBlocks(
+        "Asset Search Results",
+        "asset",
+        page,
+        page.items.map((asset) => (compact ? renderAssetCompact(asset) : renderAsset(asset))),
+        compact ? "\n" : "\n\n"
+      );
     },
   }),
 
   defineTool({
-    name: "teamdynamix_get_asset",
+    name: toolName("get_asset"),
     title: "Get TeamDynamix Asset",
     description: "Gets one asset in full, including custom attributes that search results omit.",
     input: GetInput,
@@ -164,15 +175,21 @@ export const assetTools: AnyToolDefinition[] = [
         cacheTier: "record",
       });
     },
-    render: (asset) => renderAsset(asset),
+    render: (asset) => renderRecordDetail(renderAsset(asset), asset, { omit: ASSET_SHOWN }),
   }),
 
   defineTool({
-    name: "teamdynamix_create_asset",
+    name: toolName("create_asset"),
     title: "Create TeamDynamix Asset",
     description:
-      "Creates an asset. Requires name and status_id.\nLook up status_id with teamdynamix_list_asset_statuses first.",
+      "Creates an asset. Requires name and status_id.\nLook up status_id with tdx_get_asset_reference first.",
     input: CreateInput,
+    resolve: {
+      reference: {
+        status_id: { table: "asset", kind: "asset_statuses" },
+        product_model_id: { table: "asset", kind: "product_models" },
+      },
+    },
     annotations: CREATE,
     invalidates: ASSETS,
     errorHints: assetWriteHints,
@@ -191,10 +208,15 @@ export const assetTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_edit_asset",
+    name: toolName("edit_asset"),
     title: "Edit TeamDynamix Asset",
     description: "Edits an asset's core fields, changing only the ones you supply.\nAt least one editable field is required.",
     input: UpdateInput,
+    resolve: {
+      reference: {
+        status_id: { table: "asset", kind: "asset_statuses" },
+      },
+    },
     annotations: EDIT,
     invalidates: ASSETS,
     errorHints: assetWriteHints,
@@ -225,7 +247,7 @@ export const assetTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_get_asset_feed",
+    name: toolName("get_asset_feed"),
     title: "Get TeamDynamix Asset Feed",
     description: "Gets an asset's feed entries (comments and history), newest first.\nPage with limit/offset.",
     input: FeedInput,
@@ -241,14 +263,11 @@ export const assetTools: AnyToolDefinition[] = [
     },
     isEmpty: (page) => page.items.length === 0,
     emptyMessage: "No feed entries found for this asset.",
-    render: (page, args) => {
-      const body = renderFeed(`Feed for Asset #${args.asset_id} (${page.count} of ${page.total})`, page.items);
-      return page.has_more ? `${body}\n_More entries available. Use offset=${page.next_offset}._` : body;
-    },
+    render: (page, args) => renderFeed(`Feed for Asset #${args.asset_id} (${page.count} of ${page.total})`, page.items, page),
   }),
 
   defineTool({
-    name: "teamdynamix_add_asset_comment",
+    name: toolName("add_asset_comment"),
     title: "Add TeamDynamix Asset Comment",
     description: "Adds a comment (feed entry) to an asset, optionally notifying people.",
     input: CommentInput,

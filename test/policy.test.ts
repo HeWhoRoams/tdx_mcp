@@ -7,7 +7,6 @@ import { CAPABILITIES } from "../src/framework/annotations.js";
 import {
   BUILT_IN_DEFAULTS,
   decideTool,
-  isToolAllowed,
   resolveToolPolicy,
   ToolPolicyError,
   type PolicySubject,
@@ -20,18 +19,20 @@ function policyFrom(contents: object) {
   return { policyData: contents, source: "test fixture" };
 }
 
+const allowed = (policy: Parameters<typeof decideTool>[0], subject: PolicySubject) => decideTool(policy, subject).allowed;
+
 function subject(overrides: Partial<PolicySubject> = {}): PolicySubject {
-  return { name: "teamdynamix_edit_ticket", domain: "tickets", capability: "edit", ...overrides };
+  return { name: "tdx_edit_ticket", domain: "tickets", capability: "edit", ...overrides };
 }
 
 describe("built-in defaults", () => {
   it("denies the destructive tiers so a missing policy file is still safe", () => {
     const policy = resolveToolPolicy(policyFrom({}));
     expect(policy.defaults).toEqual(BUILT_IN_DEFAULTS);
-    expect(isToolAllowed(policy, subject({ capability: "read" }))).toBe(true);
-    expect(isToolAllowed(policy, subject({ capability: "create" }))).toBe(true);
-    expect(isToolAllowed(policy, subject({ capability: "edit" }))).toBe(false);
-    expect(isToolAllowed(policy, subject({ capability: "destroy" }))).toBe(false);
+    expect(allowed(policy, subject({ capability: "read" }))).toBe(true);
+    expect(allowed(policy, subject({ capability: "create" }))).toBe(true);
+    expect(allowed(policy, subject({ capability: "edit" }))).toBe(false);
+    expect(allowed(policy, subject({ capability: "destroy" }))).toBe(false);
   });
 
   it("ships a config file that matches the built-in defaults", () => {
@@ -46,26 +47,26 @@ describe("rule precedence", () => {
       ...policyFrom({ domains: { tickets: { edit: "allow" } } }),
       readOnly: false,
     });
-    expect(isToolAllowed(policy, subject())).toBe(true);
-    expect(isToolAllowed(policy, subject({ domain: "assets", name: "teamdynamix_edit_asset" }))).toBe(false);
+    expect(allowed(policy, subject())).toBe(true);
+    expect(allowed(policy, subject({ domain: "assets", name: "tdx_edit_asset" }))).toBe(false);
   });
 
   it("lets a tool rule override its domain rule", () => {
     const policy = resolveToolPolicy({
       ...policyFrom({
         domains: { tickets: { edit: "allow" } },
-        tools: { teamdynamix_edit_ticket: "deny" },
+        tools: { tdx_edit_ticket: "deny" },
       }),
       readOnly: false,
     });
-    expect(isToolAllowed(policy, subject())).toBe(false);
+    expect(allowed(policy, subject())).toBe(false);
   });
 
   it("treats inherit as no opinion", () => {
     const policy = resolveToolPolicy({
       ...policyFrom({
         domains: { tickets: { edit: "allow" } },
-        tools: { teamdynamix_edit_ticket: "inherit" },
+        tools: { tdx_edit_ticket: "inherit" },
       }),
       readOnly: false,
     });
@@ -74,17 +75,17 @@ describe("rule precedence", () => {
 
   it("denies via TDX_DENY_TOOLS even when the file allows the tool", () => {
     const policy = resolveToolPolicy({
-      ...policyFrom({ tools: { teamdynamix_edit_ticket: "allow" } }),
-      denyTools: ["teamdynamix_edit_ticket"],
+      ...policyFrom({ tools: { tdx_edit_ticket: "allow" } }),
+      denyTools: ["tdx_edit_ticket"],
       readOnly: false,
     });
     expect(decideTool(policy, subject())).toEqual({ allowed: false, reason: "TDX_DENY_TOOLS" });
   });
 
   it("registers only the listed tools when TDX_ALLOW_TOOLS is set", () => {
-    const policy = resolveToolPolicy({ allowTools: ["teamdynamix_edit_ticket"], readOnly: false });
-    expect(isToolAllowed(policy, subject())).toBe(true);
-    expect(isToolAllowed(policy, subject({ name: "teamdynamix_get_ticket", capability: "read" }))).toBe(false);
+    const policy = resolveToolPolicy({ allowTools: ["tdx_edit_ticket"], readOnly: false });
+    expect(allowed(policy, subject())).toBe(true);
+    expect(allowed(policy, subject({ name: "tdx_get_ticket", capability: "read" }))).toBe(false);
   });
 
   it("replaces the defaults with TDX_ALLOW_CAPABILITIES", () => {
@@ -98,7 +99,7 @@ describe("rule precedence", () => {
       readOnly: true,
     });
     for (const capability of CAPABILITIES) {
-      expect(isToolAllowed(policy, subject({ capability }))).toBe(capability === "read");
+      expect(allowed(policy, subject({ capability }))).toBe(capability === "read");
     }
     expect(policy.mayModify).toBe(false);
   });
@@ -109,13 +110,13 @@ describe("read-modify-write escalation", () => {
 
   it("judges read-modify-write tools under the destroy tier when enabled", () => {
     const policy = resolveToolPolicy({ ...policyFrom(file), readOnly: false });
-    expect(isToolAllowed(policy, subject({ readModifyWrite: true }))).toBe(false);
-    expect(isToolAllowed(policy, subject())).toBe(true);
+    expect(allowed(policy, subject({ readModifyWrite: true }))).toBe(false);
+    expect(allowed(policy, subject())).toBe(true);
   });
 
   it("leaves them on the edit tier by default", () => {
     const policy = resolveToolPolicy({ ...policyFrom({ defaults: { edit: "allow" } }), readOnly: false });
-    expect(isToolAllowed(policy, subject({ readModifyWrite: true }))).toBe(true);
+    expect(allowed(policy, subject({ readModifyWrite: true }))).toBe(true);
   });
 });
 
@@ -181,20 +182,20 @@ describe("tool catalog", () => {
     const policy = resolveToolPolicy({ readOnly: false });
     for (const tool of allTools) {
       const capability = tool.annotations.capability;
-      const allowed = isToolAllowed(policy, {
+      const permitted = allowed(policy, {
         name: tool.name,
         ...(tool.domain ? { domain: tool.domain } : {}),
         capability,
       });
-      expect(allowed).toBe(capability === "read" || capability === "create");
+      expect(permitted).toBe(capability === "read" || capability === "create");
     }
   });
 
   it("keeps ticket comments available while ticket edits are denied", () => {
     const policy = resolveToolPolicy({ readOnly: false });
-    expect(isToolAllowed(policy, { name: "teamdynamix_add_ticket_comment", domain: "tickets", capability: "create" })).toBe(
+    expect(allowed(policy, { name: "tdx_add_ticket_comment", domain: "tickets", capability: "create" })).toBe(
       true
     );
-    expect(isToolAllowed(policy, subject())).toBe(false);
+    expect(allowed(policy, subject())).toBe(false);
   });
 });

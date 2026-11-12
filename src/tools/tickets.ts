@@ -1,9 +1,12 @@
+import { toolName } from "../constants.js";
 import { z } from "zod";
 import { getConfig } from "../config.js";
 import { CREATE, EDIT, READ } from "../framework/annotations.js";
 import { defineTool, ToolInputError, type AnyToolDefinition } from "../framework/defineTool.js";
 import {
   AppIdSchema,
+  refId,
+  refIds,
   AttributesSchema,
   ChildPagingShape,
   PagingShape,
@@ -14,9 +17,13 @@ import {
 } from "../schemas/common.js";
 import { tdRequest } from "../services/client.js";
 import { resolveAppId, resolvePersonUid, resolvePersonUids } from "../services/context.js";
-import { formatDate, nameWithId, renderFeed, ticketUrl, truncate } from "../services/format.js";
+import { childBlocks } from "../services/budget.js";
+import { renderRecordDetail } from "../services/record.js";
+import { htmlToText, orElse, present } from "../services/text.js";
+import { formatDate, nameWithId, renderFeed, ticketUrl } from "../services/format.js";
 import { combineHints, referenceHint } from "../services/hints.js";
-import { pagingFooter, renderCount, resultsHeading, searchPage } from "../services/search.js";
+import { pageBlocks, renderCount, searchPage } from "../services/search.js";
+import { STATUS_CLASS_NAMES, statusClassFilter } from "../services/status-class.js";
 import { paginate, type TdFeedEntry, type TdTicket } from "../types.js";
 
 const TicketIdSchema = z.number().int().positive().describe("The ticket ID.");
@@ -34,18 +41,30 @@ const SearchInput = z
     app_id: AppIdSchema,
     search_text: z.string().max(200).optional().describe("Free-text search against ticket title/description."),
     ticket_id: z.number().int().positive().optional().describe("Exact ticket ID to look up."),
-    status_ids: z.array(z.number().int()).optional().describe("Filter to these TicketStatus IDs (see teamdynamix_list_ticket_statuses)."),
-    priority_ids: z.array(z.number().int()).optional().describe("Filter to these TicketPriority IDs (see teamdynamix_list_ticket_priorities)."),
-    type_ids: z.array(z.number().int()).optional().describe("Filter to these TicketType IDs (see teamdynamix_list_ticket_types)."),
+    status_ids: refIds().optional().describe("Filter to these ticket statuses, by name (e.g. 'On Hold') or ID."),
+    priority_ids: refIds().optional().describe("Filter to these priorities, by name or ID."),
+    type_ids: refIds().optional().describe("Filter to these ticket types, by name or ID."),
     account_ids: z.array(z.number().int()).optional().describe("Filter to these Account/Department IDs."),
-    responsible_uids: z.array(z.string()).optional().describe("Filter to tickets assigned to these people. Accepts UIDs or email addresses."),
+    responsible_uids: z.array(z.string()).optional().describe("Filter to tickets assigned to these people. Accepts UIDs, email addresses, or 'me' (the signed-in user, SSO only)."),
     responsible_group_ids: z.array(z.number().int()).optional().describe("Filter to tickets assigned to these group IDs."),
-    requestor_uids: z.array(z.string()).optional().describe("Filter to tickets requested by these people. Accepts UIDs or email addresses."),
+    requestor_uids: z.array(z.string()).optional().describe("Filter to tickets requested by these people. Accepts UIDs, email addresses, or 'me' (the signed-in user, SSO only)."),
     created_date_from: z.string().optional().describe("ISO 8601 date/time; only tickets created on/after this."),
     created_date_to: z.string().optional().describe("ISO 8601 date/time; only tickets created on/before this."),
     modified_date_from: z.string().optional().describe("ISO 8601 date/time; only tickets modified on/after this."),
     modified_date_to: z.string().optional().describe("ISO 8601 date/time; only tickets modified on/before this."),
-    is_open: z.boolean().optional().describe("True for tickets not in a Closed/Cancelled status class; false for only closed/cancelled."),
+    closed_date_from: z.string().optional().describe("ISO 8601 date/time; only tickets closed on/after this."),
+    closed_date_to: z.string().optional().describe("ISO 8601 date/time; only tickets closed on/before this."),
+    is_on_hold: z.boolean().optional().describe("True for tickets currently on hold, false for those not. Not combinable with is_open or status_classes."),
+    location_ids: z.array(z.number().int()).optional().describe("Filter to tickets at these location IDs (see tdx_list_locations)."),
+    is_open: z
+      .boolean()
+      .optional()
+      .describe("True for open tickets (status class New, In Process, On Hold or Requested); false for closed ones (Completed or Cancelled). Not combinable with status_classes."),
+    status_classes: z
+      .array(z.enum(STATUS_CLASS_NAMES))
+      .min(1)
+      .optional()
+      .describe("Filter to these status classes, e.g. ['on_hold'] for tickets on hold. Not combinable with is_open."),
     sort_by: sortBySchema(["created", "modified", "priority", "status", "id"]),
     verbosity: VerbositySchema,
     ...PagingShape,
@@ -59,19 +78,19 @@ const CreateInput = z
     app_id: AppIdSchema,
     title: z.string().min(1).max(500).describe("The ticket title/subject."),
     description: z.string().max(50000).optional().describe("The ticket's initial description/body."),
-    type_id: z.number().int().positive().describe("The TicketType ID (see teamdynamix_list_ticket_types)."),
-    form_id: z.number().int().positive().optional().describe("The TicketForm ID (see teamdynamix_list_ticket_forms). Determines which custom attributes apply, e.g. Change Request's Business Purpose/Testing Plan/Backout Plan fields."),
-    status_id: z.number().int().positive().optional().describe("Initial TicketStatus ID; defaults to the type's default status."),
-    priority_id: z.number().int().positive().optional().describe("The TicketPriority ID (see teamdynamix_list_ticket_priorities)."),
-    impact_id: z.number().int().positive().optional().describe("The TicketImpact ID (see teamdynamix_list_ticket_impacts)."),
-    urgency_id: z.number().int().positive().optional().describe("The TicketUrgency ID (see teamdynamix_list_ticket_urgencies)."),
+    type_id: refId().describe("The TicketType ID (see tdx_get_ticket_reference)."),
+    form_id: refId().optional().describe("The TicketForm ID (see tdx_get_ticket_reference). Determines which custom attributes apply, e.g. Change Request's Business Purpose/Testing Plan/Backout Plan fields."),
+    status_id: refId().optional().describe("Initial TicketStatus ID; defaults to the type's default status."),
+    priority_id: refId().optional().describe("The TicketPriority ID (see tdx_get_ticket_reference)."),
+    impact_id: refId().optional().describe("The TicketImpact ID (see tdx_get_ticket_reference)."),
+    urgency_id: refId().optional().describe("The TicketUrgency ID (see tdx_get_ticket_reference)."),
     account_id: z.number().int().positive().optional().describe("The requesting Account/Department ID."),
-    source_id: z.number().int().positive().optional().describe("The TicketSource ID (see teamdynamix_list_ticket_sources)."),
+    source_id: refId().optional().describe("The TicketSource ID (see tdx_get_ticket_reference)."),
     service_id: z.number().int().positive().optional().describe("The Service Catalog service ID this ticket is for."),
     service_offering_id: z.number().int().positive().optional().describe("The Service Offering ID under service_id, if applicable."),
     start_date: z.string().optional().describe("ISO 8601 planned start date/time for the ticket, e.g. a Change's scheduled cutover."),
     end_date: z.string().optional().describe("ISO 8601 planned end date/time for the ticket."),
-    location_id: z.number().int().positive().optional().describe("Location ID (see teamdynamix_list_locations)."),
+    location_id: z.number().int().positive().optional().describe("Location ID (see tdx_list_locations)."),
     location_room_id: z.number().int().positive().optional().describe("Room ID within location_id."),
     requestor_email: z.string().email().optional().describe("Email of the requestor. Provide this or requestor_uid."),
     requestor_uid: PersonRefSchema("The requestor").optional(),
@@ -92,17 +111,17 @@ const UpdateInput = z
     ticket_id: TicketIdSchema,
     title: z.string().min(1).max(500).optional().describe("New title."),
     description: z.string().max(50000).optional().describe("New description."),
-    status_id: z.number().int().positive().optional().describe("New TicketStatus ID."),
-    priority_id: z.number().int().positive().optional().describe("New TicketPriority ID."),
-    impact_id: z.number().int().positive().optional().describe("New TicketImpact ID (see teamdynamix_list_ticket_impacts)."),
-    urgency_id: z.number().int().positive().optional().describe("New TicketUrgency ID (see teamdynamix_list_ticket_urgencies)."),
+    status_id: refId().optional().describe("New TicketStatus ID."),
+    priority_id: refId().optional().describe("New TicketPriority ID."),
+    impact_id: refId().optional().describe("New TicketImpact ID (see tdx_get_ticket_reference)."),
+    urgency_id: refId().optional().describe("New TicketUrgency ID (see tdx_get_ticket_reference)."),
     account_id: z.number().int().positive().optional().describe("New requesting Account/Department ID."),
-    source_id: z.number().int().positive().optional().describe("New TicketSource ID (see teamdynamix_list_ticket_sources)."),
+    source_id: refId().optional().describe("New TicketSource ID (see tdx_get_ticket_reference)."),
     service_id: z.number().int().positive().optional().describe("New Service Catalog service ID."),
     service_offering_id: z.number().int().positive().optional().describe("New Service Offering ID under service_id, if applicable."),
     start_date: z.string().optional().describe("New ISO 8601 planned start date/time for the ticket."),
     end_date: z.string().optional().describe("New ISO 8601 planned end date/time for the ticket."),
-    location_id: z.number().int().positive().optional().describe("New Location ID (see teamdynamix_list_locations)."),
+    location_id: z.number().int().positive().optional().describe("New Location ID (see tdx_list_locations)."),
     location_room_id: z.number().int().positive().optional().describe("New Room ID within location_id."),
     requestor_uid: PersonRefSchema("The new requestor").optional(),
     responsible_uid: PersonRefSchema("The new responsible person").optional(),
@@ -123,7 +142,7 @@ const CommentInput = z
     ticket_id: TicketIdSchema,
     comment: z.string().min(1).max(50000).describe("The comment text to add."),
     is_private: z.boolean().default(false).describe("If true, visible only to technicians, not the requestor."),
-    notify_uids: z.array(z.string()).optional().describe("People to notify. Accepts UIDs or email addresses."),
+    notify_uids: z.array(z.string()).optional().describe("People to notify. Accepts UIDs, email addresses, or 'me' (the signed-in user, SSO only)."),
     response_format: ResponseFormatSchema,
   })
   .strict();
@@ -158,7 +177,14 @@ const UpdateTaskInput = z
   })
   .strict();
 
-export function renderTicket(ticket: TdTicket, appId: number): string {
+const TICKET_SHOWN = [
+  "Title", "ID", "StatusName", "StatusID", "Type", "TypeID", "PriorityName", "PriorityID", "ImpactID", "ImpactName",
+  "UrgencyID", "UrgencyName", "ServiceID", "ServiceName", "AccountName", "AccountID", "RequestorName", "RequestorEmail",
+  "ResponsibleFullName", "ResponsibleGroupName", "ReviewerFullName", "ReviewingGroupName", "CreatedDate", "ModifiedDate",
+];
+
+/** `description: "short"` for search rows, `"none"` when a detail view prints the whole description itself. */
+export function renderTicket(ticket: TdTicket, appId: number, description: "short" | "none" = "short"): string {
   const lines = [
     `## ${ticket.Title} (#${ticket.ID})`,
     `- **Status**: ${nameWithId(ticket.StatusName, ticket.StatusID)}`,
@@ -171,35 +197,35 @@ export function renderTicket(ticket: TdTicket, appId: number): string {
   lines.push(
     `- **Account/Dept**: ${nameWithId(ticket.AccountName, ticket.AccountID)}`,
     `- **Requestor**: ${ticket.RequestorName ?? "N/A"}${ticket.RequestorEmail ? ` <${ticket.RequestorEmail}>` : ""}`,
-    `- **Responsible**: ${ticket.ResponsibleFullName ?? ticket.ResponsibleGroupName ?? "Unassigned"}`
+    `- **Responsible**: ${orElse(ticket.ResponsibleFullName, orElse(ticket.ResponsibleGroupName, "Unassigned"))}`
   );
-  if (ticket.ReviewerFullName || ticket.ReviewingGroupName) {
-    lines.push(`- **Reviewer**: ${ticket.ReviewerFullName ?? ticket.ReviewingGroupName ?? "N/A"}`);
+  if (present(ticket.ReviewerFullName) || present(ticket.ReviewingGroupName)) {
+    lines.push(`- **Reviewer**: ${orElse(ticket.ReviewerFullName, orElse(ticket.ReviewingGroupName, "N/A"))}`);
   }
   lines.push(
     `- **Created**: ${formatDate(ticket.CreatedDate)}`,
     `- **Modified**: ${formatDate(ticket.ModifiedDate)}`,
     `- **Link**: ${ticketUrl(appId, ticket.ID)}`
   );
-  if (ticket.Description) {
-    const description = String(ticket.Description);
-    lines.push(`- **Description**: ${description.length > 500 ? `${description.slice(0, 500)}...` : description}`);
+  if (description === "short" && present(ticket.Description)) {
+    const text = htmlToText(String(ticket.Description));
+    lines.push(`- **Description**: ${text.length > 500 ? `${text.slice(0, 500)}...` : text}`);
   }
   return lines.join("\n");
 }
 
-function renderTicketCompact(ticket: TdTicket, appId: number): string {
-  const assignee = ticket.ResponsibleFullName ?? ticket.ResponsibleGroupName ?? "Unassigned";
+export function renderTicketCompact(ticket: TdTicket, appId: number): string {
+  const assignee = orElse(ticket.ResponsibleFullName, orElse(ticket.ResponsibleGroupName, "Unassigned"));
   return (
     `- **#${ticket.ID}** ${ticket.Title} — ${ticket.StatusName ?? "?"}, ${ticket.PriorityName ?? "?"}, ` +
     `${assignee} — ${ticketUrl(appId, ticket.ID)}`
   );
 }
 
-const TICKETS = { domain: "tickets", appIdFrom: (args: { app_id?: number }) => resolveAppId(args.app_id) };
+const TICKETS = { domain: "tickets", appIdFrom: (args: { app_id?: number | string }) => resolveAppId(args.app_id) };
 
 /** Cached reference data turns a rejected create/update into a self-correcting error. */
-function ticketWriteHints(args: { app_id?: number }): string | undefined {
+function ticketWriteHints(args: { app_id?: number | string }): string | undefined {
   const appId = resolveAppId(args.app_id);
   return combineHints(
     referenceHint(appId, "tickets/statuses", "status_id values"),
@@ -212,13 +238,20 @@ function ticketWriteHints(args: { app_id?: number }): string | undefined {
 
 export const ticketTools: AnyToolDefinition[] = [
   defineTool({
-    name: "teamdynamix_search_tickets",
+    name: toolName("search_tickets"),
     title: "Search TeamDynamix Tickets",
     description:
       "Searches tickets by text, status, priority, type, account, assignee, requestor, or date range.\n" +
-      "Use when: 'show me open high-priority tickets assigned to Jane'. Returns partial records — use teamdynamix_get_ticket for full detail.\n" +
+      "Use when: 'show me open high-priority tickets assigned to Jane'. Returns partial records — use tdx_get_ticket for full detail.\n" +
       "Page with limit/offset or the returned next_cursor.",
     input: SearchInput,
+    resolve: {
+      reference: {
+        status_ids: { table: "ticket", kind: "statuses" },
+        priority_ids: { table: "ticket", kind: "priorities" },
+        type_ids: { table: "ticket", kind: "types" },
+      },
+    },
     annotations: READ,
     handler: async (args) => {
       const body: Record<string, unknown> = {};
@@ -239,7 +272,17 @@ export const ticketTools: AnyToolDefinition[] = [
       if (args.created_date_to) body.CreatedDateTo = args.created_date_to;
       if (args.modified_date_from) body.ModifiedDateFrom = args.modified_date_from;
       if (args.modified_date_to) body.ModifiedDateTo = args.modified_date_to;
-      if (args.is_open !== undefined) body.IsOpen = args.is_open;
+      if (args.closed_date_from) body.ClosedDateFrom = args.closed_date_from;
+      if (args.closed_date_to) body.ClosedDateTo = args.closed_date_to;
+      if (args.location_ids) body.LocationIDs = args.location_ids;
+      if (args.is_on_hold !== undefined) {
+        if (args.is_open !== undefined || args.status_classes) {
+          throw new ToolInputError("is_on_hold cannot be combined with is_open or status_classes. Use status_classes: ['on_hold'] alone, or is_on_hold alone.");
+        }
+        body.IsOnHold = args.is_on_hold;
+      }
+      const statusClassIds = statusClassFilter(args);
+      if (statusClassIds) body.StatusClassIDs = statusClassIds;
       return searchPage<TdTicket>(`/${resolveAppId(args.app_id)}/tickets/search`, body, args, {
         sortFields: SORT_FIELDS,
       });
@@ -249,20 +292,19 @@ export const ticketTools: AnyToolDefinition[] = [
     render: (page, args) => {
       if (args.count_only) return renderCount(page, "ticket");
       const appId = resolveAppId(args.app_id);
-      const lines = resultsHeading("Ticket Search Results", page, "ticket");
-      if (args.verbosity === "compact") {
-        for (const ticket of page.items) lines.push(renderTicketCompact(ticket, appId));
-        lines.push("");
-      } else {
-        for (const ticket of page.items) lines.push(renderTicket(ticket, appId), "");
-      }
-      lines.push(...pagingFooter(page));
-      return lines.join("\n");
+      const compact = args.verbosity === "compact";
+      return pageBlocks(
+        "Ticket Search Results",
+        "ticket",
+        page,
+        page.items.map((ticket) => (compact ? renderTicketCompact(ticket, appId) : renderTicket(ticket, appId))),
+        compact ? "\n" : "\n\n"
+      );
     },
   }),
 
   defineTool({
-    name: "teamdynamix_get_ticket",
+    name: toolName("get_ticket"),
     title: "Get TeamDynamix Ticket",
     description:
       "Gets one ticket in full, including description and custom attributes that search results omit.\n" +
@@ -277,18 +319,30 @@ export const ticketTools: AnyToolDefinition[] = [
         cacheTier: "record",
       });
     },
-    render: (ticket, args) => renderTicket(ticket, resolveAppId(args.app_id)),
+    render: (ticket, args) =>
+      renderRecordDetail(renderTicket(ticket, resolveAppId(args.app_id), "none"), ticket, { omit: TICKET_SHOWN }),
   }),
 
   defineTool({
-    name: "teamdynamix_create_ticket",
+    name: toolName("create_ticket"),
     title: "Create TeamDynamix Ticket",
     description:
       "Creates a ticket. Requires title and type_id.\n" +
-      "Look up type_id/status_id/priority_id/impact_id/urgency_id/form_id/source_id with the teamdynamix_list_ticket_* tools first, " +
-      "and location_id with teamdynamix_list_locations.\n" +
+      "Look up type_id/status_id/priority_id/impact_id/urgency_id/form_id/source_id with tdx_get_ticket_reference first, " +
+      "and location_id with tdx_list_locations.\n" +
       "Requestor, assignee, and reviewer accept email addresses as well as UIDs.",
     input: CreateInput,
+    resolve: {
+      reference: {
+        type_id: { table: "ticket", kind: "types" },
+        form_id: { table: "ticket", kind: "forms" },
+        status_id: { table: "ticket", kind: "statuses" },
+        priority_id: { table: "ticket", kind: "priorities" },
+        impact_id: { table: "ticket", kind: "impacts" },
+        urgency_id: { table: "ticket", kind: "urgencies" },
+        source_id: { table: "ticket", kind: "sources" },
+      },
+    },
     annotations: CREATE,
     invalidates: TICKETS,
     errorHints: ticketWriteHints,
@@ -325,12 +379,21 @@ export const ticketTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_edit_ticket",
+    name: toolName("edit_ticket"),
     title: "Edit TeamDynamix Ticket",
     description:
-      "Edits a ticket's core fields, changing only the ones you supply. To log progress or comment, use teamdynamix_add_ticket_comment.\n" +
+      "Edits a ticket's core fields, changing only the ones you supply. To log progress or comment, use tdx_add_ticket_comment.\n" +
       "At least one editable field is required; responsible_uid accepts an email address.",
     input: UpdateInput,
+    resolve: {
+      reference: {
+        status_id: { table: "ticket", kind: "statuses" },
+        priority_id: { table: "ticket", kind: "priorities" },
+        impact_id: { table: "ticket", kind: "impacts" },
+        urgency_id: { table: "ticket", kind: "urgencies" },
+        source_id: { table: "ticket", kind: "sources" },
+      },
+    },
     annotations: EDIT,
     invalidates: TICKETS,
     errorHints: ticketWriteHints,
@@ -376,7 +439,7 @@ export const ticketTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_get_ticket_feed",
+    name: toolName("get_ticket_feed"),
     title: "Get TeamDynamix Ticket Feed",
     description: "Gets a ticket's feed entries (comments, updates, history), newest first.\nPage with limit/offset.",
     input: FeedInput,
@@ -392,14 +455,11 @@ export const ticketTools: AnyToolDefinition[] = [
     },
     isEmpty: (page) => page.items.length === 0,
     emptyMessage: "No feed entries found for this ticket.",
-    render: (page, args) => {
-      const body = renderFeed(`Feed for Ticket #${args.ticket_id} (${page.count} of ${page.total})`, page.items);
-      return page.has_more ? `${body}\n_More entries available. Use offset=${page.next_offset}._` : body;
-    },
+    render: (page, args) => renderFeed(`Feed for Ticket #${args.ticket_id} (${page.count} of ${page.total})`, page.items, page),
   }),
 
   defineTool({
-    name: "teamdynamix_add_ticket_comment",
+    name: toolName("add_ticket_comment"),
     title: "Add TeamDynamix Ticket Comment",
     description: "Adds a comment (feed entry) to a ticket, optionally private and optionally notifying people.",
     input: CommentInput,
@@ -418,7 +478,7 @@ export const ticketTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_get_ticket_tasks",
+    name: toolName("get_ticket_tasks"),
     title: "Get TeamDynamix Ticket Tasks",
     description: "Lists the tasks currently on a ticket with their completion percentages.",
     input: TasksInput,
@@ -435,17 +495,16 @@ export const ticketTools: AnyToolDefinition[] = [
     isEmpty: (page) => page.items.length === 0,
     emptyMessage: "No tasks found for this ticket.",
     render: (data, args) => {
-      const lines = [`# Tasks for Ticket #${args.ticket_id} (${data.count} of ${data.total})`, ""];
-      for (const task of data.items) {
-        lines.push(`- **${task.Title ?? "(untitled)"}** (#${task.ID}) — ${task.PercentComplete ?? 0}% complete`);
-      }
-      if (data.has_more) lines.push("", `_More tasks available. Use offset=${data.next_offset}._`);
-      return truncate(lines.join("\n"));
+      return childBlocks(
+        `Tasks for Ticket #${args.ticket_id} (${data.count} of ${data.total})`,
+        data.items.map((task) => `- **${task.Title ?? "(untitled)"}** (#${task.ID}) — ${task.PercentComplete ?? 0}% complete`),
+        data
+      );
     },
   }),
 
   defineTool({
-    name: "teamdynamix_create_ticket_task",
+    name: toolName("create_ticket_task"),
     title: "Create TeamDynamix Ticket Task",
     description: "Creates a task on a ticket with an optional schedule and assignee.",
     input: CreateTaskInput,
@@ -466,7 +525,7 @@ export const ticketTools: AnyToolDefinition[] = [
   }),
 
   defineTool({
-    name: "teamdynamix_edit_ticket_task",
+    name: toolName("edit_ticket_task"),
     title: "Edit TeamDynamix Ticket Task",
     description:
       "Edits a ticket task's title, dates, assignee, or percent_complete.\n" +

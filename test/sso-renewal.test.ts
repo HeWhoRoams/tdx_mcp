@@ -4,7 +4,7 @@ import type { SsoBrowserSession } from "../src/auth/sso-browser.js";
 import { SsoActionRequiredError, SsoUnavailableError } from "../src/auth/sso-errors.js";
 import { SsoLoginError, SsoPolicyError } from "../src/auth/sso-login.js";
 import { backoffDelayMs, RENEWAL_SAFETY_MS, SsoRenewalManager } from "../src/auth/sso-renewal.js";
-import type { StoredToken, TokenStore } from "../src/services/token-store.js";
+import type { StoredToken, TokenStore } from "../src/auth/token-store.js";
 
 const oldToken: StoredToken = { token: "old", expiresAtMs: 10_000, uid: "u" };
 const newToken: StoredToken = { token: "new", expiresAtMs: 20_000, uid: "u" };

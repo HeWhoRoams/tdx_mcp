@@ -3,13 +3,14 @@ import type { SsoBrowserSession } from "./sso-browser.js";
 import { describeBlockReason, type BlockReason, type CredentialState } from "./credential-state.js";
 import {
   isRetryable,
+  signInAction,
   SsoActionRequiredError,
   SsoRenewalDiscardedError,
   SsoUnavailableError,
   type SsoFailureKind,
 } from "./sso-errors.js";
 import { SsoLoginError } from "./sso-login.js";
-import type { StoredToken } from "../services/token-store.js";
+import type { StoredToken } from "./token-store.js";
 
 export { SsoActionRequiredError } from "./sso-errors.js";
 
@@ -63,7 +64,7 @@ function failureKind(error: unknown): SsoFailureKind {
 }
 
 function blockedMessage(reason: BlockReason): string {
-  return `TeamDynamix sign-in required: ${describeBlockReason(reason)}. Run \`npm run login\` before retrying.`;
+  return `TeamDynamix sign-in required: ${describeBlockReason(reason)}. ${signInAction()} before retrying.`;
 }
 
 /**

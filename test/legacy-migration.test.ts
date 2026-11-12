@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bindingOf } from "../src/auth/identity-binding.js";
 import { legacyTokenPath, migrateLegacyState } from "../src/auth/legacy-migration.js";
-import type { StoredToken } from "../src/services/token-store.js";
+import type { StoredToken } from "../src/auth/token-store.js";
 
 const REALM = "https://x.teamdynamix.com/SBTDWebApi/api";
 let home: string;
