@@ -61,7 +61,7 @@
     "zod": "^3.23.8"
   },
   "optionalDependencies": {
-    "playwright-core": "^1.49.0"
+    "playwright-core": "^1.65.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
